@@ -1,0 +1,4 @@
+interface:
+  display_name: "系统架构决策 ADR"
+  short_description: "为长期影响系统的架构选择起草与维护 ADR，核查证据并保留人工批准边界"
+  default_prompt: "使用 $adr 核查这项系统选择是否需要 ADR；如需要，基于代码证据起草 Proposed，列出替代方案与负面后果供我决定。"

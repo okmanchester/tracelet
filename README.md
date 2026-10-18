@@ -139,6 +139,8 @@ make bench    # 并发压测 + 阶段耗时分解 + 缓存优化前后对比
 
 ## 深入了解
 
+- [系统已知问题与验收条件](docs/architecture/known-issues.md)
+- [ADR 规范、模板与决策索引](docs/adr/README.md)
 - 完整教程（需求分析 / 方案设计 / 代码实践 / 简历面试，共 31 篇）：`docs/tutorial/`
 - 技术方案设计：`docs/DevSupport-AI-技术方案设计.md`
 - 产品需求：`docs/DevSupport-AI-PRD-Lite.md`

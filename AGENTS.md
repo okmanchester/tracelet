@@ -1,0 +1,2 @@
+本地开发启用环境：conda activate tracelet
+随时维护.gitignore，不把非必要产物纳入git版本管理

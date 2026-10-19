@@ -9,6 +9,7 @@ import time
 import uuid
 
 from app.db import AsyncSessionLocal
+from app.guardrail import desensitize
 from app.models import AgentTrace
 
 
@@ -39,13 +40,13 @@ class TraceCollector:
             {
                 "agent_name": agent_name,
                 "step_order": self._order,
-                "input_summary": input_summary[:500],
-                "output_summary": output_summary[:500],
+                "input_summary": desensitize.desensitize_text(input_summary)[:500],
+                "output_summary": desensitize.desensitize_text(output_summary)[:500],
                 "status": status,
                 "duration_ms": duration_ms,
                 "token_usage": token_usage,
-                "hit_docs": hit_docs or [],
-                "error_message": error,
+                "hit_docs": desensitize.desensitize_obj(hit_docs or []),
+                "error_message": desensitize.desensitize_obj(error),
             }
         )
 
@@ -62,7 +63,7 @@ class TraceCollector:
                         conversation_id=self.conversation_id,
                         message_id=message_id or self.message_id,
                         tenant_id=self.tenant_id,
-                        **step,
+                    **desensitize.desensitize_obj(step),
                     )
                 )
             await s.commit()

@@ -11,8 +11,9 @@ import asyncio
 import json
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
+from app.access import INTERNAL_ROLES, require_identity
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.guardrail import desensitize
@@ -24,6 +25,11 @@ class ToolContext:
     tenant_id: str
     trace_id: str = ""
     is_internal: bool = False
+    user_id: str = ""
+    role: str = ""
+
+    def __post_init__(self):
+        self.is_internal = self.role in INTERNAL_ROLES and bool(self.user_id and self.tenant_id)
 
 
 @dataclass
@@ -72,11 +78,11 @@ async def _log_call(ctx, name, args, result, status, duration_ms, error):
                 trace_id=ctx.trace_id,
                 tenant_id=ctx.tenant_id,
                 tool_name=name,
-                args_summary=desensitize.desensitize_text(json.dumps(args, ensure_ascii=False))[:1000],
-                result_summary=desensitize.desensitize_text(json.dumps(result, ensure_ascii=False, default=str))[:1500],
+                args_summary=json.dumps(desensitize.desensitize_obj(args), ensure_ascii=False)[:1000],
+                result_summary=json.dumps(desensitize.desensitize_obj(result), ensure_ascii=False)[:1500],
                 status=status,
                 duration_ms=duration_ms,
-                error_message=error,
+                error_message=desensitize.desensitize_obj(error),
             )
         )
         await s.commit()
@@ -84,9 +90,11 @@ async def _log_call(ctx, name, args, result, status, duration_ms, error):
 
 async def execute(name: str, args: dict, ctx: ToolContext) -> dict:
     """执行工具：高风险拦截 + 超时 + 重试 + 脱敏日志。"""
+    require_identity(ctx)
+    args = desensitize.desensitize_obj(args)
     spec = REGISTRY.get(name)
     if spec is None:
-        return {"ok": False, "error": f"未知工具: {name}"}
+        return {"ok": False, "error": "未知工具"}
 
     # 高风险工具不允许 AI 直接执行（仅内部显式调用且需标记）
     if spec.high_risk and not ctx.is_internal:
@@ -97,14 +105,17 @@ async def execute(name: str, args: dict, ctx: ToolContext) -> dict:
     for attempt in range(spec.retries + 1):
         try:
             data = await asyncio.wait_for(spec.func(args, ctx), timeout=spec.timeout)
+            data = desensitize.desensitize_obj(data)
             duration = int((time.perf_counter() - start) * 1000)
             result = {"ok": True, "data": data}
             await _log_call(ctx, name, args, data, "ok", duration, None)
             return result
         except asyncio.TimeoutError:
             last_err = f"工具调用超时(>{spec.timeout}s)"
-        except Exception as e:  # noqa: BLE001
-            last_err = f"{type(e).__name__}: {e}"
+        except desensitize.SensitiveDataError:
+            raise
+        except Exception:  # noqa: BLE001
+            last_err = "工具执行失败"
     duration = int((time.perf_counter() - start) * 1000)
     await _log_call(ctx, name, args, {}, "error", duration, last_err)
     return {"ok": False, "error": last_err}

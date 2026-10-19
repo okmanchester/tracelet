@@ -11,6 +11,10 @@
 !backend/app/**
 !backend/scripts/
 !backend/scripts/**
+!backend/eval/
+!backend/eval/**
+!backend/benchmark/
+!backend/benchmark/**
 !backend/tests/
 !backend/tests/**
 **/__pycache__

@@ -9,14 +9,16 @@ import asyncio
 import json
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from app.agents import supervisor
+from app.access import assert_conversation_access, require_identity
 from app.db import get_db
 from app.deps import CurrentUser, get_current_user
+from app.guardrail import desensitize
 from app.models import Conversation, Message
 from app.schemas.chat import ChatRequest
 
@@ -30,13 +32,15 @@ def _gen(prefix: str) -> str:
 async def _get_or_create_conversation(
     db: AsyncSession, conv_id: str | None, user: CurrentUser
 ) -> Conversation:
-    if conv_id:
+    require_identity(user)
+    if conv_id is not None:
         conv = (
             await db.execute(select(Conversation).where(Conversation.id == conv_id))
         ).scalar_one_or_none()
-        # 复用已有会话前校验租户归属，防止越权访问他人会话
-        if conv and (user.is_internal or conv.tenant_id == user.tenant_id):
-            return conv
+        if conv is None:
+            raise HTTPException(404, "会话不存在")
+        assert_conversation_access(user, conv, write=True)
+        return conv
     conv = Conversation(id=_gen("conv"), tenant_id=user.tenant_id, user_id=user.user_id,
                         channel="web", status="active")
     db.add(conv)
@@ -50,11 +54,13 @@ async def chat(
     user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    require_identity(user)
+    message = desensitize.desensitize_text(body.message)
     conv = await _get_or_create_conversation(db, body.conversation_id, user)
 
     # 人工模式：会话已转人工 → 客户消息不再走 AI，仅追加并提示等待人工
     if conv.transferred_to_human and not user.is_internal:
-        cust_msg = Message(id=_gen("msg"), conversation_id=conv.id, role="user", content=body.message)
+        cust_msg = Message(id=_gen("msg"), conversation_id=conv.id, role="user", content=message)
         db.add(cust_msg)
         await db.commit()
         ack = "您的消息已转达人工技术支持，我们会尽快回复，可在「我的会话」查看进展。"
@@ -71,15 +77,16 @@ async def chat(
         return EventSourceResponse(human_stream())
 
     # 落库用户消息
-    user_msg = Message(id=_gen("msg"), conversation_id=conv.id, role="user", content=body.message)
+    user_msg = Message(id=_gen("msg"), conversation_id=conv.id, role="user", content=message)
     db.add(user_msg)
     await db.commit()
 
     # 运行编排
     result = await supervisor.run(
-        query=body.message, tenant_id=conv.tenant_id, user_id=user.user_id,
-        conversation_id=conv.id, is_internal=user.is_internal,
+        query=message, tenant_id=conv.tenant_id, user_id=user.user_id,
+        conversation_id=conv.id, is_internal=user.is_internal, role=user.role,
     )
+    result = desensitize.desensitize_obj(result)
 
     # 落库助手消息（含诊断元信息）
     assistant_msg = Message(

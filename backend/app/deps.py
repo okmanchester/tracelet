@@ -9,17 +9,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.access import is_internal as internal_identity
+from app.access import require_identity
 from app.db import get_db
 from app.models import User
 from app.security import decode_access_token
 
 bearer = HTTPBearer(auto_error=False)
-
-# 客户侧角色：只能访问本租户数据
-CUSTOMER_ROLES = {"customer_dev", "customer_admin"}
-# 内部角色：可进工作台
-INTERNAL_ROLES = {"support", "admin"}
-
 
 @dataclass
 class CurrentUser:
@@ -31,7 +27,7 @@ class CurrentUser:
 
     @property
     def is_internal(self) -> bool:
-        return self.role in INTERNAL_ROLES
+        return internal_identity(self)
 
 
 async def get_current_user(
@@ -47,13 +43,15 @@ async def get_current_user(
     user = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")
-    return CurrentUser(
+    current = CurrentUser(
         user_id=user.id,
         username=user.username,
         display_name=user.display_name,
         role=user.role,
         tenant_id=user.tenant_id,
     )
+    require_identity(current)
+    return current
 
 
 def require_internal(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
@@ -65,6 +63,7 @@ def require_internal(user: CurrentUser = Depends(get_current_user)) -> CurrentUs
 
 def assert_tenant_access(user: CurrentUser, target_tenant_id: str) -> None:
     """租户隔离：客户侧角色只能访问本租户数据；内部角色可跨租户。"""
+    require_identity(user)
     if user.is_internal:
         return
     if user.tenant_id != target_tenant_id:

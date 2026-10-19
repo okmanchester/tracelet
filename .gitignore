@@ -17,6 +17,7 @@ htmlcov/
 # ----- 前端 -----
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo
 
 # ----- IDE / OS / 日志 -----
 .idea/

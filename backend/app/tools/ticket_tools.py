@@ -7,20 +7,40 @@ from datetime import datetime
 
 from sqlalchemy import select
 
+from app.access import (
+    assert_conversation_access,
+    require_identity,
+    ticket_read_filter,
+    valid_identity,
+)
 from app.db import AsyncSessionLocal
-from app.models import Ticket
+from app.guardrail import desensitize
+from app.models import Conversation, Ticket
 from app.tools.registry import ToolContext, ToolSpec, register
 
 
 async def create_ticket(args: dict, ctx: ToolContext) -> dict:
     """创建技术支持工单（含 AI 诊断摘要与证据）。"""
+    require_identity(ctx)
+    if any(key in args and args[key] != value for key, value in (
+        ("tenant_id", ctx.tenant_id), ("user_id", ctx.user_id),
+    )):
+        raise ValueError("工单身份与认证身份不一致")
+    args = desensitize.desensitize_obj(args)
     ticket_id = "tk_" + datetime(2026, 6, 15).strftime("%Y%m%d") + "_" + uuid.uuid4().hex[:6]
     async with AsyncSessionLocal() as s:
+        if args.get("conversation_id") is not None:
+            conv = (await s.execute(select(Conversation).where(
+                Conversation.id == args["conversation_id"],
+            ))).scalar_one_or_none()
+            if conv is None:
+                raise ValueError("关联会话不存在")
+            assert_conversation_access(ctx, conv, write=True)
         s.add(
             Ticket(
                 ticket_id=ticket_id,
                 tenant_id=ctx.tenant_id,
-                user_id=args.get("user_id", ""),
+                user_id=ctx.user_id,
                 category=args.get("category", "其它"),
                 priority=args.get("priority", "P2"),
                 status="new",
@@ -40,17 +60,17 @@ async def create_ticket(args: dict, ctx: ToolContext) -> dict:
 
 async def query_ticket(args: dict, ctx: ToolContext) -> dict:
     """按 ticket_id 查询工单状态。"""
+    if not valid_identity(ctx):
+        return {"found": False}
     ticket_id = args.get("ticket_id")
     async with AsyncSessionLocal() as s:
         t = (
-            await s.execute(select(Ticket).where(Ticket.ticket_id == ticket_id))
+            await s.execute(select(Ticket).where(Ticket.ticket_id == ticket_id, ticket_read_filter(ctx)))
         ).scalar_one_or_none()
         if t is None:
             return {"found": False}
-        if not ctx.is_internal and t.tenant_id != ctx.tenant_id:
-            return {"found": False, "reason": "无权访问"}
-        return {"found": True, "ticket_id": t.ticket_id, "status": t.status,
-                "priority": t.priority, "title": t.title}
+        return desensitize.desensitize_obj({"found": True, "ticket_id": t.ticket_id, "status": t.status,
+                "priority": t.priority, "title": t.title})
 
 
 async def _high_risk_blocked(args: dict, ctx: ToolContext) -> dict:

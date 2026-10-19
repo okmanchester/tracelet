@@ -14,6 +14,8 @@ COPY backend/app ./app
 RUN python -m pip install --no-cache-dir ".[dev]"
 
 COPY backend/scripts ./scripts
+COPY backend/eval ./eval
+COPY backend/benchmark ./benchmark
 COPY backend/tests ./tests
 COPY backend/alembic.ini ./
 COPY backend/migrations ./migrations

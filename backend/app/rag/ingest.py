@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 from app.db import SyncSessionLocal
+from app.guardrail import desensitize
 from app.llm import client
 from app.llm.registry import get_embedding_provider
 from app.models import KnowledgeDocument
@@ -92,7 +93,7 @@ async def ingest_all(recreate: bool = True) -> dict:
     doc_records = []
 
     for f in files:
-        md = f.read_text(encoding="utf-8")
+        md = desensitize.desensitize_text(f.read_text(encoding="utf-8"))
         first_line = md.splitlines()[0] if md else f.stem
         doc_title = first_line[2:].strip() if first_line.startswith("# ") else f.stem
         category = _category(f.name)

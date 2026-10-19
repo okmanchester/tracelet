@@ -47,7 +47,7 @@ async def list_tickets(
     rows = (await db.execute(stmt)).scalars().all()
     return {
         "tickets": [
-            {"ticket_id": t.ticket_id, "tenant_id": t.tenant_id, "title": t.title,
+            {"ticket_id": t.ticket_id, "tenant_id": t.tenant_id, "title": desensitize.desensitize_text(t.title),
              "category": t.category, "priority": t.priority, "status": t.status,
              "error_code": t.error_code, "assignee": t.assignee,
              "created_at": t.created_at.isoformat()}
@@ -70,12 +70,15 @@ async def ticket_with_context(
                 select(Message).where(Message.conversation_id == t.conversation_id).order_by(Message.created_at)
             )
         ).scalars().all()
-        messages = [{"role": m.role, "content": m.content, "meta": m.meta} for m in msgs]
+        messages = [{"role": m.role, "content": desensitize.desensitize_text(m.content),
+                     "meta": desensitize.desensitize_obj(m.meta)} for m in msgs]
     return {
         "ticket": {
             "ticket_id": t.ticket_id, "tenant_id": t.tenant_id, "title": t.title,
             "category": t.category, "priority": t.priority, "status": t.status,
-            "summary": t.summary, "ai_diagnosis": t.ai_diagnosis, "evidence": t.evidence,
+            "summary": desensitize.desensitize_text(t.summary),
+            "ai_diagnosis": desensitize.desensitize_text(t.ai_diagnosis),
+            "evidence": desensitize.desensitize_text(t.evidence),
             "related_request_ids": t.related_request_ids, "error_code": t.error_code,
             "assignee": t.assignee, "conversation_id": t.conversation_id,
         },
@@ -94,15 +97,17 @@ async def update_ticket(
     if t is None:
         raise HTTPException(404, "工单不存在")
     if body.status:
+        body.status = desensitize.desensitize_text(body.status)
         if body.status not in VALID_STATUS:
             raise HTTPException(400, f"非法状态: {body.status}")
         t.status = body.status
     if body.assignee is not None:
-        t.assignee = body.assignee
+        t.assignee = desensitize.desensitize_text(body.assignee)
     t.updated_at = datetime.utcnow()
     # 审计
     db.add(AuditLog(tenant_id=t.tenant_id, user_id=user.user_id, action="update_ticket",
-                    detail=f"ticket={ticket_id} status={body.status} assignee={body.assignee} note={body.note}"))
+                    detail=desensitize.desensitize_text(
+                        f"ticket={ticket_id} status={body.status} assignee={body.assignee} note={body.note}")))
     await db.commit()
     return {"ok": True, "ticket_id": ticket_id, "status": t.status, "assignee": t.assignee}
 
@@ -125,7 +130,8 @@ async def suggest_reply(
         raise HTTPException(404, "会话不存在")
     msgs = await _conv_messages(db, conv_id)
     # 仅取最近 8 条作为话术生成上下文，控制 token 并聚焦近期诉求
-    convo = "\n".join(f"{'客户' if m.role == 'user' else '助手'}: {m.content}" for m in msgs[-8:])
+    convo = desensitize.desensitize_text("\n".join(
+        f"{'客户' if m.role == 'user' else '助手'}: {m.content}" for m in msgs[-8:]))
     gen = await client.chat(
         [
             {"role": "system", "content": "你是资深技术支持。基于会话上下文，为客服起草一段专业、礼貌、可直接发送给客户的回复话术，给出明确结论与下一步。只输出话术正文。"},
@@ -150,7 +156,8 @@ async def human_reply(
     msg = Message(
         id="msg_" + uuid.uuid4().hex[:12], conversation_id=conv_id, role="assistant",
         content=desensitize.desensitize_text(content),
-        meta={"by": "human", "agent_id": user.user_id, "agent_name": user.display_name},
+        meta=desensitize.desensitize_obj(
+            {"by": "human", "agent_id": user.user_id, "agent_name": user.display_name}),
     )
     db.add(msg)
     conv.transferred_to_human = True

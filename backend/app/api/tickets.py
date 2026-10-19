@@ -11,8 +11,10 @@ from datetime import datetime
 
 from sqlalchemy import desc
 
+from app.access import assert_conversation_access, ticket_read_filter
 from app.db import get_db
-from app.deps import CurrentUser, assert_tenant_access, get_current_user
+from app.deps import CurrentUser, get_current_user
+from app.guardrail import desensitize
 from app.models import Conversation, Feedback, Message, Ticket
 from app.schemas.chat import FeedbackRequest
 
@@ -24,12 +26,11 @@ async def my_tickets(
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
     stmt = select(Ticket).order_by(Ticket.created_at.desc()).limit(50)
-    if not user.is_internal:
-        stmt = stmt.where(Ticket.tenant_id == user.tenant_id)
+    stmt = stmt.where(ticket_read_filter(user))
     rows = (await db.execute(stmt)).scalars().all()
     return {
         "tickets": [
-            {"ticket_id": t.ticket_id, "title": t.title, "category": t.category,
+            {"ticket_id": t.ticket_id, "title": desensitize.desensitize_text(t.title), "category": t.category,
              "priority": t.priority, "status": t.status, "error_code": t.error_code,
              "created_at": t.created_at.isoformat()}
             for t in rows
@@ -44,12 +45,18 @@ async def ticket_detail(
     t = (await db.execute(select(Ticket).where(Ticket.ticket_id == ticket_id))).scalar_one_or_none()
     if t is None:
         raise HTTPException(404, "工单不存在")
-    assert_tenant_access(user, t.tenant_id)
+    allowed = (await db.execute(select(Ticket.ticket_id).where(
+        Ticket.ticket_id == ticket_id, ticket_read_filter(user),
+    ))).scalar_one_or_none()
+    if allowed is None:
+        raise HTTPException(403, "无权访问该工单")
     return {
-        "ticket_id": t.ticket_id, "title": t.title, "category": t.category, "priority": t.priority,
-        "status": t.status, "summary": t.summary, "related_request_ids": t.related_request_ids,
+        "ticket_id": t.ticket_id, "title": desensitize.desensitize_text(t.title), "category": t.category,
+        "priority": t.priority, "status": t.status, "summary": desensitize.desensitize_text(t.summary),
+        "related_request_ids": desensitize.desensitize_obj(t.related_request_ids),
         "related_endpoint": t.related_endpoint, "error_code": t.error_code,
-        "ai_diagnosis": t.ai_diagnosis, "evidence": t.evidence, "assignee": t.assignee,
+        "ai_diagnosis": desensitize.desensitize_text(t.ai_diagnosis),
+        "evidence": desensitize.desensitize_text(t.evidence), "assignee": t.assignee,
         "conversation_id": t.conversation_id, "created_at": t.created_at.isoformat(),
     }
 
@@ -63,7 +70,13 @@ async def submit_feedback(
     ).scalar_one_or_none()
     if conv is None:
         raise HTTPException(404, "会话不存在")
-    assert_tenant_access(user, conv.tenant_id)
+    assert_conversation_access(user, conv, write=True)
+    if body.message_id is not None:
+        message = (await db.execute(select(Message.id).where(
+            Message.id == body.message_id, Message.conversation_id == conv.id,
+        ))).scalar_one_or_none()
+        if message is None:
+            raise HTTPException(422, "反馈消息不属于该会话")
     db.add(Feedback(conversation_id=body.conversation_id, message_id=body.message_id,
                     tenant_id=conv.tenant_id, type=body.type))
     # 反馈分三类：resolved/unresolved 记满意度，need_human 触发转人工建单
@@ -82,7 +95,7 @@ async def submit_feedback(
                 .order_by(desc(Message.created_at))
             )
         ).scalars().first()
-        title = (last_user.content[:60] if last_user else "用户请求人工支持")
+        title = desensitize.desensitize_text(last_user.content if last_user else "用户请求人工支持")[:60]
         ticket_id = "tk_" + datetime(2026, 6, 15).strftime("%Y%m%d") + "_" + uuid.uuid4().hex[:6]
         db.add(Ticket(
             ticket_id=ticket_id, tenant_id=conv.tenant_id, user_id=user.user_id,

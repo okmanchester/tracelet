@@ -8,6 +8,7 @@
 import json
 
 from app.cache.redis_client import get_redis
+from app.guardrail import desensitize
 
 HISTORY_MAX = 20        # 历史消息窗口
 ENTITY_TTL = 60 * 60 * 6  # 实体记忆 6 小时
@@ -22,6 +23,7 @@ def _ent_key(conv_id: str) -> str:
 
 
 async def append_message(conv_id: str, role: str, content: str) -> None:
+    content = desensitize.desensitize_text(content)
     r = get_redis()
     await r.rpush(_hist_key(conv_id), json.dumps({"role": role, "content": content}, ensure_ascii=False))
     await r.ltrim(_hist_key(conv_id), -HISTORY_MAX, -1)
@@ -31,17 +33,18 @@ async def append_message(conv_id: str, role: str, content: str) -> None:
 async def get_history(conv_id: str) -> list[dict]:
     r = get_redis()
     items = await r.lrange(_hist_key(conv_id), 0, -1)
-    return [json.loads(x) for x in items]
+    return desensitize.desensitize_obj([json.loads(x) for x in items])
 
 
 async def get_entities(conv_id: str) -> dict:
     r = get_redis()
     raw = await r.get(_ent_key(conv_id))
-    return json.loads(raw) if raw else {}
+    return desensitize.desensitize_obj(json.loads(raw)) if raw else {}
 
 
 async def update_entities(conv_id: str, new_entities: dict) -> dict:
     """合并新抽取到的非空实体到记忆，返回合并后的实体。"""
+    new_entities = desensitize.desensitize_obj(new_entities)
     current = await get_entities(conv_id)
     for k, v in (new_entities or {}).items():
         if v not in (None, "", [], {}):

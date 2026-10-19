@@ -2,7 +2,9 @@
 # @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
 """评估与运营指标接口（内部角色）。"""
 
-from fastapi import APIRouter, Depends
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,13 +12,15 @@ from app.db import get_db
 from app.deps import CurrentUser, require_internal
 from app.models import Conversation, Ticket
 from app.observability import cost
+from app.offline_runs import offline_runs_allowed
 
 router = APIRouter(prefix="/api", tags=["eval"])
 
 
 @router.get("/metrics")
 async def metrics(
-    user: CurrentUser = Depends(require_internal), db: AsyncSession = Depends(get_db)
+    user: Annotated[CurrentUser, Depends(require_internal)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     total_conv = await db.scalar(select(func.count()).select_from(Conversation)) or 0
     resolved = await db.scalar(
@@ -39,6 +43,7 @@ async def metrics(
     ).all()
 
     return {
+        "capabilities": {"offline_runs": offline_runs_allowed()},
         "conversations": {
             "total": int(total_conv),
             "resolved_by_ai": int(resolved),
@@ -55,8 +60,10 @@ async def metrics(
 
 
 @router.post("/eval/run")
-async def run_eval(user: CurrentUser = Depends(require_internal)) -> dict:
+async def run_eval(user: Annotated[CurrentUser, Depends(require_internal)]) -> dict:
     """运行标准评估集，返回各项指标与 Badcase（耗时较长）。"""
+    if not offline_runs_allowed():
+        raise HTTPException(403, "当前环境禁止运行评估和压测，请使用独立评估环境")
     from eval.run_eval import evaluate
 
     return await evaluate()

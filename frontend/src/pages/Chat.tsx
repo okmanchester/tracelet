@@ -7,6 +7,7 @@ import { Card, Input, Button, Tag, Space, Typography, Avatar, message as antMsg 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { chatStream, submitFeedback } from "../api";
+import { ChatRequestError } from "../chatStream";
 import DiagnosisCard from "../components/DiagnosisCard";
 import Highlight from "../components/Highlight";
 
@@ -71,8 +72,8 @@ export default function Chat() {
             return c;
           }),
       });
-    } catch {
-      antMsg.error("对话失败");
+    } catch (error) {
+      antMsg.error(error instanceof ChatRequestError ? error.message : "对话失败，请稍后重试");
       setMsgs((prev) => prev.filter((_, i) => i !== prev.length - 1));
     } finally {
       setSending(false);

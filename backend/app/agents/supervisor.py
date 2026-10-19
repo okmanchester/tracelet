@@ -8,12 +8,13 @@ import asyncio
 
 from langgraph.graph import END, START, StateGraph
 
+from app.access import require_identity
 from app.agents import api_diagnostic, billing, doc_rag, intent_router, security, ticket
 from app.agents.state import AgentState
 from app.agents.util import render_card
 from app.cache import route_cache, semantic_cache
 from app.config import settings
-from app.guardrail import fallback
+from app.guardrail import desensitize, fallback
 from app.llm import client
 from app.llm.router import model_for
 from app.memory import session
@@ -22,6 +23,12 @@ from app.observability.trace import TraceCollector, timer
 from app.tools.registry import ToolContext, load_tools
 
 load_tools()
+
+
+def _finalize_result(result: dict) -> dict:
+    result = desensitize.desensitize_obj(result)
+    result["answer"] = security.review_output(result["answer"]).clean_text
+    return result
 
 
 async def _general_reply(query: str) -> tuple[str, int]:
@@ -119,8 +126,10 @@ def build_graph(ctx: ToolContext, trace: TraceCollector):
             try:
                 result = await coro
                 return name, result, t, None
-            except Exception as e:  # noqa: BLE001  单 Agent 异常隔离
-                return name, None, t, f"{type(e).__name__}: {e}"
+            except desensitize.SensitiveDataError:
+                raise
+            except Exception:  # noqa: BLE001  单 Agent 异常隔离
+                return name, None, t, "专业 Agent 执行失败"
 
     async def specialists_node(state: AgentState) -> dict:
         route = state.get("route", [])
@@ -133,7 +142,7 @@ def build_graph(ctx: ToolContext, trace: TraceCollector):
         if not route:  # chitchat
             with timer() as t:
                 reply, tok = await _general_reply(query)
-            trace.step("general", input_summary=query, output_summary=reply[:120], duration_ms=t.ms, token_usage=tok)
+            trace.step("general", input_summary=query, output_summary=reply, duration_ms=t.ms, token_usage=tok)
             return {"agent_outputs": {"general": reply}, "rag_citations": []}
 
         # 并行运行选中的专业 Agent
@@ -154,7 +163,7 @@ def build_graph(ctx: ToolContext, trace: TraceCollector):
                 continue
             tok = getattr(result, "tokens", 0)
             hit = [c.get("doc_title") for c in getattr(result, "citations", [])]
-            trace.step(name, input_summary=query, output_summary=getattr(result, "answer", "")[:160],
+            trace.step(name, input_summary=query, output_summary=getattr(result, "answer", ""),
                        duration_ms=t.ms, token_usage=tok, hit_docs=hit)
             outputs[name] = result
             citations.extend(getattr(result, "citations", []))
@@ -187,7 +196,8 @@ def build_graph(ctx: ToolContext, trace: TraceCollector):
         with timer() as t:
             tk = await ticket.create_from_context(
                 query=state["query"], intent=state["intent"], entities=state.get("entities", {}),
-                ai_diagnosis=ai_diag, evidence=evidence, ctx=ctx,
+                ai_diagnosis=desensitize.desensitize_text(ai_diag),
+                evidence=desensitize.desensitize_obj(evidence), ctx=ctx,
                 user_id=state.get("user_id", ""), conversation_id=state["conversation_id"])
         trace.step("ticket", input_summary=state["query"], output_summary=tk.message, duration_ms=t.ms)
         return {"ticket_id": tk.ticket_id, "ticket_message": tk.message}
@@ -216,7 +226,7 @@ def build_graph(ctx: ToolContext, trace: TraceCollector):
                         {"role": "user", "content": "\n".join(c["conclusion"] for c in cards)},
                     ],
                     model=model_for("summarize"), temperature=0.2)
-            trace.step("summarize", output_summary=gen.content[:160], duration_ms=t.ms, token_usage=gen.total_tokens)
+            trace.step("summarize", output_summary=gen.content, duration_ms=t.ms, token_usage=gen.total_tokens)
             card = {
                 "conclusion": gen.content.strip(),
                 "evidence": [e for c in cards for e in c["evidence"]],
@@ -263,33 +273,39 @@ def build_graph(ctx: ToolContext, trace: TraceCollector):
 
 
 async def run(
-    *, query: str, tenant_id: str, user_id: str, conversation_id: str, is_internal: bool = False
+    *, query: str, tenant_id: str, user_id: str, conversation_id: str, is_internal: bool = False,
+    role: str = "",
 ) -> dict:
     """执行一次完整编排，返回结果并持久化链路与记忆。"""
+    ctx = ToolContext(tenant_id=tenant_id, user_id=user_id, role=role)
+    require_identity(ctx)
+    query = desensitize.desensitize_text(query)
     trace = TraceCollector(tenant_id=tenant_id, conversation_id=conversation_id)
-    ctx = ToolContext(tenant_id=tenant_id, trace_id=trace.trace_id, is_internal=is_internal)
+    ctx.trace_id = trace.trace_id
 
     graph = build_graph(ctx, trace)
 
     init: AgentState = {
         "tenant_id": tenant_id, "user_id": user_id, "conversation_id": conversation_id,
-        "is_internal": is_internal, "query": query,
+        "is_internal": ctx.is_internal, "query": query,
     }
     try:
         final = await graph.ainvoke(init)
-    except Exception as e:  # noqa: BLE001  管线级兜底：规则回复 + 自动建单转人工
-        trace.step("fallback", input_summary=query, status="error", error=f"{type(e).__name__}: {e}")
+    except desensitize.SensitiveDataError:
+        raise
+    except Exception:  # noqa: BLE001  管线级兜底：规则回复 + 自动建单转人工
+        trace.step("fallback", input_summary=query, status="error", error="编排执行失败")
         tk = await ticket.create_from_context(
             query=query, intent="ticket", entities={}, ai_diagnosis="",
-            evidence={"pipeline_error": f"{type(e).__name__}: {e}"}, ctx=ctx,
+            evidence={"pipeline_error": "编排执行失败"}, ctx=ctx,
             user_id=user_id, conversation_id=conversation_id)
         await trace.persist()
-        return {
+        return _finalize_result({
             "answer": f"{fallback.rule_reply(None)}（工单号 {tk.ticket_id}）",
             "intent": None, "confidence": 0.0, "citations": [], "need_human": True,
             "ticket_id": tk.ticket_id, "trace_id": trace.trace_id,
             "total_tokens": trace.total_tokens, "entities": {}, "need_clarify": False,
-        }
+        })
 
     # 建单友好提示统一在此拼接（最终状态稳定含 ticket_message，避免节点可见性时序问题）
     answer = final.get("final_answer", "")
@@ -312,6 +328,8 @@ async def run(
         "from_cache": final.get("from_cache", False),
     }
 
+    # 所有分支（包括缓存、澄清、工单提示）在任何附属写入前统一处理。
+    result = _finalize_result(result)
     # 记忆：写入本轮对话
     await session.append_message(conversation_id, "user", query)
     await session.append_message(conversation_id, "assistant", result["answer"])

@@ -10,13 +10,7 @@ import asyncio
 import statistics
 import time
 
-from sqlalchemy import select
-
-from app.agents import supervisor
-from app.cache import semantic_cache
-from app.cache.redis_client import get_redis
-from app.db import AsyncSessionLocal, async_engine
-from app.models import AgentTrace
+from app.offline_runs import require_offline_run
 
 # 标准压测问题（以可缓存的文档问答为主，混合诊断/账单）
 QUESTIONS = [
@@ -36,11 +30,14 @@ def _percentile(data: list[float], p: float) -> float:
     if not data:
         return 0.0
     s = sorted(data)
-    k = max(0, min(len(s) - 1, int(round((p / 100) * (len(s) - 1)))))
+    k = max(0, min(len(s) - 1, round((p / 100) * (len(s) - 1))))
     return s[k]
 
 
 async def _run_batch(label: str) -> tuple[list[float], list[str]]:
+    require_offline_run()
+    from app.agents import supervisor
+
     sem = asyncio.Semaphore(CONCURRENCY)
     latencies: list[float] = []
     trace_ids: list[str] = []
@@ -50,7 +47,7 @@ async def _run_batch(label: str) -> tuple[list[float], list[str]]:
         async with sem:
             t0 = time.perf_counter()
             r = await supervisor.run(query=q, tenant_id=tenant, user_id=user,
-                                     conversation_id=f"bench_{label}_{idx}")
+                                     conversation_id=f"bench_{label}_{idx}", role="customer_dev")
             dt = time.perf_counter() - t0
             latencies.append(dt)
             trace_ids.append(r["trace_id"])
@@ -68,6 +65,11 @@ async def _run_batch(label: str) -> tuple[list[float], list[str]]:
 
 
 async def _stage_breakdown(trace_ids: list[str]) -> None:
+    require_offline_run()
+    from app.db import AsyncSessionLocal
+    from app.models import AgentTrace
+    from sqlalchemy import select
+
     async with AsyncSessionLocal() as s:
         rows = (
             await s.execute(select(AgentTrace).where(AgentTrace.trace_id.in_(trace_ids)))
@@ -81,6 +83,11 @@ async def _stage_breakdown(trace_ids: list[str]) -> None:
 
 
 async def main() -> None:
+    require_offline_run()
+    from app.cache import semantic_cache
+    from app.cache.redis_client import get_redis
+    from app.db import async_engine
+
     r = get_redis()
     await r.delete(semantic_cache.key_for("t_acme"))
 

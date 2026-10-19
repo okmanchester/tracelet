@@ -22,7 +22,7 @@ export default function Conversations() {
   const open = (id: string) => getConversation(id).then(setDetail);
 
   const send = async () => {
-    if (!reply.trim() || !detail) return;
+    if (!reply.trim() || !detail?.conversation?.can_write) return;
     setSending(true);
     try {
       await sendCustomerMessage(detail.conversation.id, reply.trim());
@@ -83,7 +83,7 @@ export default function Conversations() {
                   </Card>
                 </div>
               ))}
-              {transferred && (
+              {transferred && detail.conversation.can_write && (
                 <Space.Compact style={{ width: "100%", marginTop: 12 }}>
                   <Input.TextArea
                     value={reply}

@@ -79,6 +79,8 @@ Accepted 表示选择获准，不表示已经实施或问题已解决。实施�
 | 编号 | 标题 | 状态 | 日期 | 关联问题 | 替代关系 |
 | --- | --- | --- | --- | --- | --- |
 | [0001](0001-managed-mysql-migrations.md) | 使用 Alembic 管理 MySQL 迁移并显式接管已有数据库 | Accepted | 2026-10-19 | [ARCH-008](../architecture/known-issues.md#arch-008)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
+| [0002](0002-conversation-ticket-access.md) | 统一会话与工单的角色、归属和操作权限 | Accepted | 2026-10-19 | [ARCH-001](../architecture/known-issues.md#arch-001)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
+| [0003](0003-sensitive-data-boundaries.md) | 试用链路仅保留和传递脱敏内容 | Accepted | 2026-10-19 | [ARCH-006](../architecture/known-issues.md#arch-006)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 
 ## 模板来源
 

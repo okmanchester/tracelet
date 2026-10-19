@@ -2,6 +2,8 @@
 
 本清单记录架构检查发现的问题、证据及后续验收条件，不代表已经批准修复方案。涉及系统长期架构选择时，按照 [ADR 规范](../adr/README.md)提出 Proposed；普通修复无需为了记录而创建 ADR。
 
+2026-10-19 已形成用户要求实施的 [试用推进路线](pilot-roadmap.md)：先完成访问与数据边界，再补业务闭环和试用准入；ADR-0002、0003 已由用户明确接受并授权实施，正式状态以各项决定与验收记录为准。
+
 ## 检查基准与证据边界
 
 - 检查日期：2026-10-18（Asia/Shanghai）。
@@ -34,32 +36,36 @@ python -B -m pytest -q -p no:cacheprovider
 
 | 编号 | 问题 | 优先级 | 状态 | 关联 ADR |
 | --- | --- | --- | --- | --- |
-| [ARCH-001](#arch-001) | 会话权限规则不一致 | P1 | Open | 无 |
+| [ARCH-001](#arch-001) | 会话权限规则不一致 | P1 | Resolved | [0002（Accepted）](../adr/0002-conversation-ticket-access.md) |
 | [ARCH-002](#arch-002) | Agent 结果与转人工行为脱节 | P1 | Open | 无 |
 | [ARCH-003](#arch-003) | 写工具重试可能重复执行 | P1 | Open | 无 |
 | [ARCH-004](#arch-004) | 会话记忆与持久化记录缺少恢复边界 | P1 | Open | 无 |
 | [ARCH-005](#arch-005) | 会话并发与人工接管缺少协调 | P1 | Open | 无 |
-| [ARCH-006](#arch-006) | 脱敏未覆盖输入、存储与全部出口 | P1 | Open | 无 |
-| [ARCH-007](#arch-007) | 知识库发布与缓存版本不一致 | P1 | Open | 无 |
+| [ARCH-006](#arch-006) | 脱敏未覆盖输入、存储与全部出口 | P1 | Resolved | [0003（Accepted）](../adr/0003-sensitive-data-boundaries.md) |
+| [ARCH-007](#arch-007) | 知识库发布与缓存版本不一致 | P1 | Deferred | 无 |
 | [ARCH-008](#arch-008) | 初始化默认删表且缺少增量迁移 | P0 | Resolved | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md) |
 | [ARCH-009](#arch-009) | 演示时间假设进入运行逻辑 | P1 | Open | 无 |
-| [ARCH-010](#arch-010) | 金额和单价使用浮点类型 | P2 | Open | 无 |
-| [ARCH-011](#arch-011) | 评估与业务数据、缓存未隔离 | P1 | Open | 无 |
-| [ARCH-012](#arch-012) | 对话通信缺少完整的失败与取消语义 | P2 | Open | 无 |
+| [ARCH-010](#arch-010) | 金额和单价使用浮点类型 | P2 | Deferred | 无 |
+| [ARCH-011](#arch-011) | 评估与业务数据、缓存未隔离 | P1 | Deferred | 无 |
+| [ARCH-012](#arch-012) | 对话通信缺少完整的失败与取消语义 | P2 | In Progress | 无 |
 | [ARCH-013](#arch-013) | 异步请求路径包含同步阻塞调用 | P2 | Open | 无 |
-| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | Open | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md) |
+| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | In Progress | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md)、[0002（Accepted）](../adr/0002-conversation-ticket-access.md)、[0003（Accepted）](../adr/0003-sensitive-data-boundaries.md) |
 
 <a id="arch-001"></a>
 
 ## ARCH-001：会话权限规则不一致
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / [ADR-0002（Accepted）](../adr/0002-conversation-ticket-access.md)。
 - **现象**：会话列表对客户同时过滤 tenant_id 和 user_id，但详情、追加消息、聊天复用会话仅检查租户或内部身份；同租户其他客户的会话可被继续使用。
 - **影响与优先级理由**：当前“自己的会话”列表语义与资源访问边界不一致，可能暴露同租户其他用户的消息或允许代发消息；增加入口前应统一。
 - **代码证据**：[conversations.py](../../backend/app/api/conversations.py) 的 `list_conversations`、`get_conversation`、`add_customer_message`；[chat.py](../../backend/app/api/chat.py) 的 `_get_or_create_conversation`；[deps.py](../../backend/app/deps.py) 的 `assert_tenant_access`。
 - **验证方式与结论**：源码确认；mock M5 已复现同租户、不同 user_id 的会话被复用。未执行真实 HTTP 越权测试。客户管理员是否需要租户范围访问仍需产品决定，不能把现有列表行为当成正式权限设计。
 - **建议方向（待讨论）**：先确定角色与资源访问矩阵，再集中复用访问策略，覆盖查询、写入及工具入口。
 - **验收条件**：权限矩阵明确；列表、详情、聊天、追加消息和反馈行为一致；同租户其他用户及跨租户访问按角色被允许或拒绝，并有回归证据。
+- **2026-10-19 方案进展**：已按用户选择起草 ADR-0002，将工单 HTTP/工具读取及可信建单归属纳入同一权限矩阵；用户已明确回答“接受 ADR-0002、ADR-0003 并授权实施”；现已实现共享权限策略、可信工具身份、建单归属和反馈关联校验，并完成下述隔离验收。
+
+- **2026-10-19 权限实施与验收**：基准为 `3da867361c79ef8fc6a0cbce3f7fbf78a7020ea8` 加本批未提交变更。[access.py](../../backend/app/access.py) 集中读取/写入与列表 SQL 条件，HTTP 和工单工具共用；客户管理员租户内只读、客户写入限本人、内部人员通过工作台处理他人会话；开发者不读取归属缺失、矛盾或关联孤立的工单。可信身份随 ToolContext 传递，单独 is_internal 标志不能提升角色。指定会话无效返回 404/403，不另建会话；反馈类型与消息关联验证在写入前完成。
+- **2026-10-19 验收证据**：[test_pilot_boundaries_mysql.py](../../backend/tests/test_pilot_boundaries_mysql.py) 的前四项测试在随机独立 MySQL 中通过，涵盖两个租户、每租户两个开发者和一个客户管理员，以及 support/admin 的会话列表/详情、聊天、追加消息、反馈、工单 HTTP/工具与工作台矩阵；非法会话、反馈关联、伪造建单身份拒绝且无业务写入/模型调用，55 条他人记录不会挤掉本人列表结果。HTTP 使用 ASGI 和注入的合成身份、同步数据库适配器；未据此声称真实登录、浏览器或并发事务已经验收。前端读取服务端 can_write 隐藏他人会话的输入，类型与构建检查通过。完整套件 **171 passed，零失败/错误/跳过**，见 [第一批验收](pilot-roadmap.md#first-batch-verification)。ARCH-001 据此更新为 Resolved。
 
 <a id="arch-002"></a>
 
@@ -113,25 +119,30 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-006：脱敏未覆盖输入、存储与全部出口
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / [ADR-0003（Accepted）](../adr/0003-sensitive-data-boundaries.md)。
 - **现象**：聊天保存 body.message 并直接交编排；Trace 保存输入、输出摘要时只截断。正常安全节点处理回复及 card，但澄清、缓存命中直接结束，工单提示在安全节点之后追加。
 - **影响与优先级理由**：最终回复脱敏无法保护此前已存储或外发的内容；出口规则依赖分支约定。需在更多渠道和数据源接入前明确边界。
 - **代码证据**：[chat.py](../../backend/app/api/chat.py) 的 `chat`；[trace.py](../../backend/app/observability/trace.py) 的 `TraceCollector.step`；[supervisor.py](../../backend/app/agents/supervisor.py) 的 `intent_node`、`security_node`、结束边与 `run`；[ticket.py](../../backend/app/agents/ticket.py) 的 `create_from_context`。
 - **验证方式与结论**：源码确认调用顺序与保存路径。未做真实敏感数据外发测试，也未证明某个具体分支已发生泄漏；后续用合成敏感标记拦截存储和模型边界验证。
 - **建议方向（待讨论）**：定义输入、模型上下文、业务证据、日志与输出各自允许的数据；统一最终出口并保留必要的非敏感诊断关联信息。
 - **验收条件**：正常、澄清、缓存命中、建单失败、异常兜底及人工回复路径均验证敏感标记的存储、外发和展示策略；错误信息同样受控。
+- **2026-10-19 方案进展**：已起草 ADR-0003，推荐仅保留脱敏内容、保留必要且已授权的业务 ID，覆盖入口、模型、存储和最终出口。用户已明确接受并授权实施；现已实现入口、模型门面、记忆/缓存、工单、日志与统一出口处理，并完成下述限定范围的验收。
+
+- **2026-10-19 脱敏实施**：同一实现基准下，[desensitize.py](../../backend/app/guardrail/desensitize.py) 完整替换已识别敏感值，覆盖短凭证、结构化敏感字段、数字值、JSON/Unicode 转义及重复处理，合法业务 ID 不因长十六进制片段而误遮盖；字段名不是豁免。入口、模型门面、Redis 记忆/路由/答案缓存、知识入库/展示、工单、Trace、工具/审计日志及人工回复使用同一能力。Supervisor 的 `_finalize_result` 处理正常、缓存、澄清、工单提示及管线兜底；HTTP 验证错误和异常不回显原文，日志省略原始 traceback。
+- **2026-10-19 验收证据与边界**：[test_pilot_privacy.py](../../backend/tests/test_pilot_privacy.py) 的 **36 项**替身测试覆盖模型 chat/stream、embedding、rerank、跨 chunk 凭证、Redis、真实编排图各出口、日志与错误处理；MySQL 测试另外验证真实消息/工单/Trace/工具日志/审计字段，以及输入处理失败无写入。完整隔离套件 **171 passed，零失败/错误/跳过**，见 [第一批验收](pilot-roadmap.md#first-batch-verification)。本状态仅针对 ADR-0003 定义的数据类型和处理边界，检测并不保证识别任意秘密；Redis、向量和模型使用替身，真实服务链路留待第三批；未扫描或改写旧业务数据，试用仍要求全新独立环境。ARCH-006 在上述边界内更新为 Resolved。
 
 <a id="arch-007"></a>
 
 ## ARCH-007：知识库发布与缓存版本不一致
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Deferred / P1 / 无。
 - **现象**：全量 ingest 预热 embedding 后删除旧 collection，再逐篇生成及写入，最后登记 MySQL 元信息。BM25 是常驻进程缓存，`reset_bm25` 未见调用；语义缓存键只有 embedding 指纹与租户，没有知识库版本或过期设置；文档中心直接读取 Markdown。
 - **影响与优先级理由**：中途失败可能留下部分索引；文档、向量、关键词索引和答案缓存可能引用不同版本。BM25 数据读取还默认限于 2000 条，不能保证扩容后完整。
 - **代码证据**：[ingest.py](../../backend/app/rag/ingest.py) 的 `ingest_all`；[store.py](../../backend/app/rag/store.py) 的 `ensure_collection`、`all_chunks`；[retriever.py](../../backend/app/rag/retriever.py) 的 `_ensure_bm25`、`reset_bm25`；[semantic_cache.py](../../backend/app/cache/semantic_cache.py) 的 `key_for`、`put`；[docs.py](../../backend/app/api/docs.py) 的 `get_doc`。
 - **验证方式与结论**：源码确认；真实中途失败、跨进程缓存失效及超过 2000 条的召回表现待验证，不记录虚构命中率。
 - **建议方向（待讨论）**：构建、校验新知识版本后再发布；统一向量、关键词、文档展示、引用与答案缓存的版本，支持失败保留旧版和回退。
 - **验收条件**：构建失败不损坏生效知识；发布后所有 worker 及缓存版本一致；引用可定位对应版本；大于默认条数时关键词索引仍完整。
+- **2026-10-19 延期决定依据与重评**：用户要求实施的 [试用路线](pilot-roadmap.md) 限定固定知识，更新采用停服、重建与恢复验收，在线版本发布安排在试用后。需要不停服更新、动态跨 worker 切换或超过当前索引读取边界时须先重评；该限制未修复现有重建失败风险，不标记 Resolved。
 
 <a id="arch-008"></a>
 
@@ -212,37 +223,40 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-010：金额和单价使用浮点类型
 
-- **状态 / 优先级 / 关联 ADR**：Open / P2 / 无。
+- **状态 / 优先级 / 关联 ADR**：Deferred / P2 / 无。
 - **现象**：`Plan.price_per_call`、`overage_price_per_call` 和 `Invoice.amount` 使用 `Mapped[float]`，账单工具直接返回这些值。
 - **影响与优先级理由**：后续若承担金额计算或对账，需要明确精度及舍入，避免依赖二进制浮点的表示；本次没有发现或复现具体错误账单，因此列为真实计费能力完善前的风险。
 - **代码证据**：[models.py](../../backend/app/models.py) 的 `Plan`、`Invoice`；[billing_tools.py](../../backend/app/tools/billing_tools.py) 的 `query_plan`、`query_bill`。
 - **验证方式与结论**：源码确认字段类型；实际金额累计误差和数据迁移表现待验证，不声称现有账单已计算错误。
 - **建议方向（待讨论）**：评估定点存储、货币与单价精度、舍入及序列化约定，并与实际计费来源对齐。
 - **验收条件**：精度和舍入规则明确；边界金额、单价乘调用量、迁移前后对账及接口往返验证通过。
+- **2026-10-19 延期决定依据与重评**：用户要求实施的 [试用路线](pilot-roadmap.md) 限定账单只读，不承担真实金额计算。真实扣费、单价乘调用量或对账启用前必须完成精度与迁移验证；本批不改金额字段。
 
 <a id="arch-011"></a>
 
 ## ARCH-011：评估与业务数据、缓存未隔离
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Deferred / P1 / 无。
 - **现象**：`evaluate` 清理所有语义缓存及 routecache，再使用数据集租户调用真实 Supervisor；固定 eval 会话 ID 可在同一 Redis 中复用，链路可能建单并记录记忆、Trace 和成本。
 - **影响与优先级理由**：与业务共用依赖时会影响缓存和业务记录；重复评估可能带入上一轮记忆，破坏评估条件。应在继续依赖评估结果前隔离。
 - **代码证据**：[run_eval.py](../../backend/eval/run_eval.py) 的 `evaluate`；[eval.py](../../backend/app/api/eval.py) 的 `run_eval`；[supervisor.py](../../backend/app/agents/supervisor.py) 的 `run`；[semantic_cache.py](../../backend/app/cache/semantic_cache.py) 的 `clear_all`。
 - **验证方式与结论**：源码确认；本次未执行真实评估，未测量业务污染规模或评估准确率变化。
 - **建议方向（待讨论）**：独立评估依赖或命名空间，按运行 ID 区分记忆和结果；明确是否允许真实写工具及清理范围。
 - **验收条件**：连续及并发评估不清理业务缓存、不写业务工单；每轮初始条件可控，结果能关联数据集版本和独立运行 ID。
+- **2026-10-19 延期决定依据与临时防护**：用户要求实施的 [试用路线](pilot-roadmap.md) 将完整评估隔离安排在恢复评估能力之前。当前工作区在 [offline_runs.py](../../backend/app/offline_runs.py) 集中限制执行环境：仅 dev/test/eval 允许，pilot、production 及未知环境拒绝；HTTP、evaluate 函数、评估 CLI 和压测入口在业务依赖加载与副作用前检查。指标查询保留，并返回能力信息供页面隐藏评估入口。允许执行的环境仍可能共用依赖，必须使用独立数据；未完成运行 ID 和独立依赖设计，因此保持 Deferred，不能视为 Resolved。20 项离线任务保护测试已通过，包含拒绝前不加载业务依赖、CLI 非零退出、HTTP 拒绝及只读指标能力；完整结果见 [第一批验收](pilot-roadmap.md#first-batch-verification)。
 
 <a id="arch-012"></a>
 
 ## ARCH-012：对话通信缺少完整的失败与取消语义
 
-- **状态 / 优先级 / 关联 ADR**：Open / P2 / 无。
+- **状态 / 优先级 / 关联 ADR**：In Progress / P2 / 无。
 - **现象**：后端等待整个 Supervisor 与消息提交后才返回 SSE，并对完整答案分块模拟打字；前端 `chatStream` 不检查 HTTP 状态，直接取 body reader，未提供取消、显式错误事件或完成事件缺失的处理契约。
 - **影响与优先级理由**：长任务期间无服务端进度，认证失败或流中断可能无法被可靠区分；多渠道、取消及恢复能力开发前应确定协议。完整审核后输出本身并非缺陷。
 - **代码证据**：[chat.py](../../backend/app/api/chat.py) 的 `chat`、`event_stream`；[api.ts](../../frontend/src/api.ts) 的 `chatStream`；[Chat.tsx](../../frontend/src/pages/Chat.tsx) 的 `send`。
 - **验证方式与结论**：源码确认；真实浏览器断网、代理超时及取消行为待验证，未测量首包延迟。
 - **建议方向（待讨论）**：定义接受请求、进度、完成、失败与取消的契约，检查 HTTP 状态；若增加模型流式，仍须明确安全审核与可展示内容的边界。
 - **验收条件**：401、服务异常、正常完成、无 done 中断及主动取消均有明确前后端行为；请求可关联到可查询的会话与结果。
+- **2026-10-19 最小修复进展**：[chatStream.ts](../../frontend/src/chatStream.ts) 在读取 body 前检查 HTTP 状态，对 401/403/404/服务异常给出固定错误；聊天页退出等待并展示错误，reader 在结束或异常时释放。保留既有成功接口和事件格式。本批不增加取消、无 done 中断、进度或恢复契约，问题继续处理中。前端 7 项通信测试、类型检查和生产构建通过；这些是函数级替身验证，不是浏览器断网或完整取消契约的证明。
 
 <a id="arch-013"></a>
 
@@ -260,7 +274,7 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-014：关键业务不变量缺少持久化回归测试
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / [ADR-0001（Accepted）](../adr/0001-managed-mysql-migrations.md)。
+- **状态 / 优先级 / 关联 ADR**：In Progress / P1 / [ADR-0001（Accepted）](../adr/0001-managed-mysql-migrations.md)、[ADR-0002（Accepted）](../adr/0002-conversation-ticket-access.md)、[ADR-0003（Accepted）](../adr/0003-sensitive-data-boundaries.md)。
 - **基准现象（2026-10-18）**：tests 只有模型 provider 相关的 8 项测试；评估集关注生成结果，不能替代权限、状态一致性、幂等或并发的确定性测试。此前发现的 6 种异常仅做过一次性 mock。
 - **影响与优先级理由**：模型接入测试通过仍无法拦住已确认的业务问题；修复核心边界前后需要可重复的保护。
 - **代码证据**：[test_llm_providers.py](../../backend/tests/test_llm_providers.py) 的 8 个 `test_*`；[run_eval.py](../../backend/eval/run_eval.py) 的 `evaluate`；[pyproject.toml](../../backend/pyproject.toml) 的 pytest 配置。
@@ -271,6 +285,8 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-19 第二批覆盖增补**：增加 30 项隔离验收编排与 JUnit 报告检查测试并通过；新增 Make 验收入口测试尚因缺少 GNU Make 跳过。当前本机部分运行合计 44 passed、13 skipped，独立容器实际验收仍受 Docker 访问及自动审批服务限制，详见 [ARCH-008 第二批记录](#arch-008)。本问题继续保持 Open。
 - **2026-10-19 第三批覆盖增补**：ADR-0001 已获用户接受，新增 34 项离线/替身迁移测试并通过，以及 12 项待真实 MySQL 执行的迁移场景；初始化拒绝未接管库时不触碰向量服务的测试也通过。当前本机可执行部分共 79 passed、25 skipped，真实迁移及完整异步验收的缺口见 [ARCH-008 第三批记录](#arch-008)。尚未覆盖本清单其他全部业务不变量，继续保持 Open。
 - **2026-10-19 验收补齐**：隔离完整套件实际取得 109 passed、零失败/错误/跳过，补齐上述 MySQL、Make 及既有异步测试的执行缺口，详见 [ARCH-008 完整隔离验收](#arch-008)。本问题继续保持 Open：权限、工具幂等、人工竞争、知识发布失败等其他业务不变量仍需随对应修复补测试，不能由当前套件数量推导已覆盖。
+
+- **2026-10-19 试用第一批覆盖增补**：新增 20 项离线任务保护、36 项隐私边界和 6 项真实 MySQL 测试，后者在测试内部遍历角色/资源/动作矩阵。完整套件实际为 **171 passed，零失败/错误/跳过**；前端另有 7 项通信回归及构建通过，详见 [第一批验收](pilot-roadmap.md#first-batch-verification)。当前已补齐权限、敏感数据边界与评估禁用场景，幂等、恢复、人工竞争、知识发布失败等仍需后续测试，因此保持 In Progress。
 
 ## 六个 mock 场景的复核说明
 

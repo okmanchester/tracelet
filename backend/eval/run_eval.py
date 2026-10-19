@@ -10,19 +10,23 @@ import asyncio
 import json
 from pathlib import Path
 
-from app.agents import supervisor
-from app.cache import semantic_cache
-from app.cache.redis_client import get_redis
 from app.guardrail import desensitize
+from app.offline_runs import require_offline_run
 
 EVAL_DIR = Path(__file__).resolve().parent
 
 
 def _load(name: str) -> list[dict]:
-    return [json.loads(l) for l in (EVAL_DIR / name).read_text(encoding="utf-8").splitlines() if l.strip()]
+    lines = (EVAL_DIR / name).read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines if line.strip()]
 
 
 async def evaluate() -> dict:
+    require_offline_run()
+    from app.agents import supervisor
+    from app.cache import semantic_cache
+    from app.cache.redis_client import get_redis
+
     cases = _load("dataset.jsonl")
     # 清理语义缓存 + 路由缓存，保证每次评估走真实链路
     await semantic_cache.clear_all()
@@ -38,6 +42,7 @@ async def evaluate() -> dict:
         res = await supervisor.run(
             query=c["query"], tenant_id=c["tenant_id"], user_id=c["user_id"],
             conversation_id=f"eval_{c['id']}_{i}", is_internal=False,
+            role="customer_dev",
         )
         # 意图
         intent_correct = res.get("intent") == c["expected_intent"]
@@ -92,6 +97,7 @@ async def evaluate() -> dict:
 
 
 def main() -> None:
+    require_offline_run()
     from app.db import async_engine
 
     async def _run():

@@ -2,6 +2,8 @@
 # @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
 """对话/工单相关 DTO。"""
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -13,7 +15,7 @@ class ChatRequest(BaseModel):
 class FeedbackRequest(BaseModel):
     conversation_id: str
     message_id: str | None = None
-    type: str  # resolved / unresolved / need_human
+    type: Literal["resolved", "unresolved", "need_human"]
 
 
 class TicketUpdateRequest(BaseModel):

@@ -9,18 +9,19 @@ import hashlib
 import json
 
 from app.cache.redis_client import get_redis
+from app.guardrail import desensitize
 
 TTL = 60 * 60 * 24
 
 
 def _key(query: str) -> str:
-    norm = query.strip().lower()
+    norm = desensitize.desensitize_text(query).strip().lower()
     return "routecache:" + hashlib.md5(norm.encode("utf-8")).hexdigest()
 
 
 async def get(query: str) -> dict | None:
     raw = await get_redis().get(_key(query))
-    return json.loads(raw) if raw else None
+    return desensitize.desensitize_obj(json.loads(raw)) if raw else None
 
 
 async def put(query: str, result: dict) -> None:
@@ -30,4 +31,5 @@ async def put(query: str, result: dict) -> None:
         "entities": result["entities"],
         "route": result["route"],
     }
+    payload = desensitize.desensitize_obj(payload)
     await get_redis().set(_key(query), json.dumps(payload, ensure_ascii=False), ex=TTL)

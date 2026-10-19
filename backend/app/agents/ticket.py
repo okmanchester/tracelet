@@ -5,6 +5,7 @@
 import json
 from dataclasses import dataclass
 
+from app.guardrail import desensitize
 from app.tools.registry import ToolContext, execute
 
 # 意图 -> 工单类型 / 默认优先级
@@ -35,6 +36,10 @@ async def create_from_context(
     user_id: str,
     conversation_id: str,
 ) -> TicketResult:
+    query = desensitize.desensitize_text(query)
+    ai_diagnosis = desensitize.desensitize_text(ai_diagnosis or "")
+    evidence = desensitize.desensitize_obj(evidence)
+    entities = desensitize.desensitize_obj(entities)
     # 按意图映射工单类型与优先级，未知意图按低优先级咨询处理
     category, priority = CATEGORY_MAP.get(intent, ("咨询", "P3"))
     request_ids = [entities["request_id"]] if entities.get("request_id") else []

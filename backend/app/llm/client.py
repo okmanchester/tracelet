@@ -5,10 +5,12 @@
 具体厂商由 app.llm.registry 根据 .env 选择；本模块只负责：
 - 统一重试策略（仅对 LLMTransientError，最多 3 次指数退避）；
 - 统一向量维度校验；
+- 外发输入和模型返回的敏感内容处理；
 - 保持历史函数签名，业务调用点无需感知 provider。
 """
 
 from collections.abc import AsyncGenerator
+from dataclasses import replace
 
 from tenacity import (
     retry,
@@ -18,8 +20,15 @@ from tenacity import (
 )
 
 from app.config import settings
+from app.guardrail import desensitize
 from app.llm import registry
-from app.llm.base import ChatResult, LLMConfigurationError, LLMTransientError
+from app.llm.base import (
+    ChatResult,
+    LLMConfigurationError,
+    LLMError,
+    LLMPermanentError,
+    LLMTransientError,
+)
 
 __all__ = [
     "ChatResult",
@@ -40,6 +49,17 @@ _retry = retry(
 )
 
 
+async def _invoke(func, *args, **kwargs):
+    try:
+        return await func(*args, **kwargs)
+    except desensitize.SensitiveDataError:
+        raise
+    except LLMError as exc:
+        raise type(exc)("模型服务调用失败") from None
+    except Exception:
+        raise LLMPermanentError("模型服务调用失败") from None
+
+
 @_retry
 async def chat(
     messages: list[dict],
@@ -49,13 +69,19 @@ async def chat(
     temperature: float = 0.2,
 ) -> ChatResult:
     """单轮/多轮对话。model 为空时使用当前 chat provider 的大模型。"""
+    messages = desensitize.desensitize_obj(messages)
+    # tools 为服务端注册的 JSON Schema；属性名 token 等是声明，不是凭证值。
+    tools = desensitize.desensitize_obj(tools, mask_fields=False)
     provider = registry.get_chat_provider()
-    return await provider.chat(
+    result = await _invoke(provider.chat,
         messages,
         model=model or provider.model_for("large"),
         tools=tools,
         temperature=temperature,
     )
+    return replace(result, content=desensitize.desensitize_text(result.content),
+                   tool_calls=desensitize.desensitize_obj(result.tool_calls),
+                   model=desensitize.desensitize_text(result.model))
 
 
 async def chat_stream(
@@ -64,12 +90,21 @@ async def chat_stream(
     model: str | None = None,
     temperature: float = 0.3,
 ) -> AsyncGenerator[str, None]:
-    """流式对话，逐段产出文本。"""
+    """保留异步生成器接口，完整响应脱敏后产出。"""
+    messages = desensitize.desensitize_obj(messages)
     provider = registry.get_chat_provider()
-    async for chunk in provider.chat_stream(
-        messages, model=model or provider.model_for("large"), temperature=temperature
-    ):
-        yield chunk
+    parts = []
+    try:
+        async for chunk in provider.chat_stream(
+            messages, model=model or provider.model_for("large"), temperature=temperature
+        ):
+            parts.append(chunk)
+    except LLMError as exc:
+        raise type(exc)("模型服务调用失败") from None
+    except Exception:
+        raise LLMPermanentError("模型服务调用失败") from None
+    # 当前产品不展示未审核的模型 token；完整处理避免跨 chunk 的凭证漏检。
+    yield desensitize.desensitize_text("".join(parts))
 
 
 def _validate_dimension(vector: list[float]) -> None:
@@ -86,7 +121,8 @@ async def embed(texts: list[str]) -> list[list[float]]:
     """批量文档向量化（ingest 用）。provider 内部按厂商上限自动分批。"""
     if not texts:
         return []
-    vectors = await registry.get_embedding_provider().embed_documents(texts)
+    texts = desensitize.desensitize_obj(texts)
+    vectors = await _invoke(registry.get_embedding_provider().embed_documents, texts)
     for vector in vectors:
         _validate_dimension(vector)
     return vectors
@@ -100,7 +136,8 @@ async def embed_documents(texts: list[str]) -> list[list[float]]:
 @_retry
 async def embed_query(text: str) -> list[float]:
     """查询向量化（检索 / 语义缓存用）。本地 BGE 会自动加 query 指令前缀。"""
-    vector = await registry.get_embedding_provider().embed_query(text)
+    text = desensitize.desensitize_text(text)
+    vector = await _invoke(registry.get_embedding_provider().embed_query, text)
     _validate_dimension(vector)
     return vector
 
@@ -117,4 +154,7 @@ async def rerank(
     """文档重排序，返回 [{index, score}]，按相关性降序。"""
     if not documents:
         return []
-    return await registry.get_rerank_provider().rerank(query, documents, top_n=top_n)
+    query = desensitize.desensitize_text(query)
+    documents = desensitize.desensitize_obj(documents)
+    result = await _invoke(registry.get_rerank_provider().rerank, query, documents, top_n=top_n)
+    return desensitize.desensitize_obj(result)

@@ -5,13 +5,18 @@
 import logging
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api import auth, chat, conversations, docs
+from app.api import auth, chat, conversations, docs, tickets, traces, workbench
 from app.api import eval as eval_api
-from app.api import tickets, traces, workbench
 from app.config import settings
+from app.guardrail import desensitize
+from app.guardrail.safe_logging import install_safe_logging
 
+install_safe_logging()
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger("devsupport")
 
@@ -28,6 +33,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(desensitize.SensitiveDataError)
+async def unsafe_content_error(_request, _exc):
+    return JSONResponse(status_code=500, content={"detail": "内容安全处理失败，请稍后重试"})
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_error(_request, exc):
+    return JSONResponse(status_code=exc.status_code,
+                        content=desensitize.desensitize_obj({"detail": exc.detail}), headers=exc.headers)
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(_request, _exc):
+    return JSONResponse(status_code=422, content={"detail": "请求参数无效"})
+
+
+@app.exception_handler(Exception)
+async def service_error(_request, _exc):
+    return JSONResponse(status_code=500, content={"detail": "服务暂时不可用，请稍后重试"})
 
 
 @app.get("/health", tags=["system"])

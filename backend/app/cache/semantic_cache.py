@@ -12,6 +12,7 @@ import numpy as np
 
 from app.cache.redis_client import get_redis
 from app.config import settings
+from app.guardrail import desensitize
 from app.llm import client
 from app.llm.registry import get_embedding_provider
 
@@ -51,7 +52,7 @@ async def get(tenant_id: str, query: str) -> tuple[dict | None, list[float]]:
     qa = np.array(qv)
     best, best_sim = None, -1.0
     for item in raw:
-        e = json.loads(item)
+        e = desensitize.desensitize_obj(json.loads(item))
         sim = _cosine(qa, np.array(e["embedding"]))
         if sim > best_sim:
             best_sim, best = sim, e
@@ -72,14 +73,14 @@ async def get(tenant_id: str, query: str) -> tuple[dict | None, list[float]]:
 async def put(tenant_id: str, query: str, result: dict, embedding: list[float]) -> None:
     r = get_redis()
     entry = json.dumps(
-        {
+        desensitize.desensitize_obj({
             "query": query,
             "embedding": embedding,
             "answer": result["answer"],
             "citations": result.get("citations", []),
             "card": result.get("card"),
             "intent": result.get("intent"),
-        },
+        }),
         ensure_ascii=False,
     )
     await r.lpush(_key(tenant_id), entry)

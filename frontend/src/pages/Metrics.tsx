@@ -58,7 +58,7 @@ export default function Metrics() {
         </Col>
       </Row>
 
-      <Card title="质量评估" size="small" style={{ marginTop: 12 }}
+      {m.capabilities?.offline_runs === true && <Card title="质量评估" size="small" style={{ marginTop: 12 }}
         extra={<Button type="primary" loading={evaluating} onClick={runEval}>运行评估集</Button>}>
         {evalResult ? (
           <Descriptions column={3} size="small" bordered>
@@ -74,7 +74,7 @@ export default function Metrics() {
         ) : (
           <span style={{ color: "#888" }}>点击「运行评估集」对标准问题集真实跑分（耗时约 1-2 分钟）</span>
         )}
-      </Card>
+      </Card>}
     </div>
   );
 }

@@ -1,6 +1,6 @@
 # @author: 公众号：IT杨秀才
 # @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
-"""文档中心接口：向已登录用户提供知识库原始资料的浏览能力。
+"""文档中心接口：向已登录用户提供知识资料的脱敏浏览能力。
 
 资料来源为项目根目录 data/knowledge/*.md（与 RAG 检索同一份源）。
 """
@@ -8,6 +8,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.deps import CurrentUser, get_current_user
+from app.guardrail import desensitize
 from app.rag.ingest import CATEGORY_MAP, KNOWLEDGE_DIR
 
 router = APIRouter(prefix="/api/docs", tags=["docs"])
@@ -21,9 +22,9 @@ def _meta(path):
     title = first[2:].strip() if first.startswith("# ") else stem
     return {
         "id": prefix,
-        "title": title,
+        "title": desensitize.desensitize_text(title),
         "category": CATEGORY_MAP.get(prefix, "其它"),
-        "filename": path.name,
+        "filename": desensitize.desensitize_text(path.name),
     }
 
 
@@ -40,5 +41,5 @@ async def get_doc(doc_id: str, user: CurrentUser = Depends(get_current_user)) ->
         raise HTTPException(404, "文档不存在")
     path = matches[0]
     meta = _meta(path)
-    meta["content"] = path.read_text(encoding="utf-8")
+    meta["content"] = desensitize.desensitize_text(path.read_text(encoding="utf-8"))
     return meta

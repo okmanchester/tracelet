@@ -8,8 +8,9 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.access import assert_conversation_access, can_write_conversation, conversation_read_filter
 from app.db import get_db
-from app.deps import CurrentUser, assert_tenant_access, get_current_user
+from app.deps import CurrentUser, get_current_user
 from app.guardrail import desensitize
 from app.models import Conversation, Message
 
@@ -21,9 +22,7 @@ async def list_conversations(
     user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> dict:
     stmt = select(Conversation).order_by(Conversation.updated_at.desc()).limit(50)
-    # 内部支持人员可见全部会话；外部客户仅见本租户下自己的会话
-    if not user.is_internal:
-        stmt = stmt.where(Conversation.tenant_id == user.tenant_id, Conversation.user_id == user.user_id)
+    stmt = stmt.where(conversation_read_filter(user))
     rows = (await db.execute(stmt)).scalars().all()
     return {
         "conversations": [
@@ -44,7 +43,7 @@ async def get_conversation(
     ).scalar_one_or_none()
     if conv is None:
         raise HTTPException(404, "会话不存在")
-    assert_tenant_access(user, conv.tenant_id)
+    assert_conversation_access(user, conv)
     msgs = (
         await db.execute(
             select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at)
@@ -54,9 +53,10 @@ async def get_conversation(
         "conversation": {"id": conv.id, "tenant_id": conv.tenant_id, "status": conv.status,
                          "latest_intent": conv.latest_intent,
                          "transferred_to_human": conv.transferred_to_human,
-                         "satisfaction": conv.satisfaction},
+                         "satisfaction": conv.satisfaction, "can_write": can_write_conversation(user, conv)},
         "messages": [
-            {"id": m.id, "role": m.role, "content": m.content, "meta": m.meta,
+            {"id": m.id, "role": m.role, "content": desensitize.desensitize_text(m.content),
+             "meta": desensitize.desensitize_obj(m.meta),
              "created_at": m.created_at.isoformat()}
             for m in msgs
         ],
@@ -76,7 +76,7 @@ async def add_customer_message(
     ).scalar_one_or_none()
     if conv is None:
         raise HTTPException(404, "会话不存在")
-    assert_tenant_access(user, conv.tenant_id)
+    assert_conversation_access(user, conv, write=True)
     msg = Message(
         id="msg_" + uuid.uuid4().hex[:12], conversation_id=conv_id, role="user",
         content=desensitize.desensitize_text(content),

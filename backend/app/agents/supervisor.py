@@ -1,5 +1,3 @@
-# @author: 公众号：IT杨秀才
-# @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
 """Supervisor：用 LangGraph 编排多 Agent，串行保证安全审查在最终回复前。
 
 管线：load_context → intent → [clarify?] → specialists(并行) → ticket → summarize → security

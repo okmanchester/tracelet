@@ -1,5 +1,5 @@
 本地开发启用环境：conda activate tracelet
-随时维护.gitignore，不把非必要产物纳入git版本管理
+随时维护.gitignore，不把非必要产物纳入git版本管理，低价值文件可以自行删除
 
 ## 架构决策记录
 

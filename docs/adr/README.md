@@ -2,7 +2,7 @@
 
 这里记录对 Tracelet 系统具有长期影响的重要架构选择及其理由，供后续开发追溯。开发流程和本库的管理规则在本文说明，不为“采用 ADR”创建 ADR。
 
-当前尚无编号 ADR。这不代表系统没有架构，而是尚未在本库完成具体系统决策的提案与批准。
+编号 ADR 见下方索引；Proposed 仅为待讨论提案，不表示已经批准或实施。
 
 ## 什么时候需要 ADR
 
@@ -78,6 +78,7 @@ Accepted 表示选择获准，不表示已经实施或问题已解决。实施�
 
 | 编号 | 标题 | 状态 | 日期 | 关联问题 | 替代关系 |
 | --- | --- | --- | --- | --- | --- |
+| [0001](0001-managed-mysql-migrations.md) | 使用 Alembic 管理 MySQL 迁移并显式接管已有数据库 | Accepted | 2026-10-19 | [ARCH-008](../architecture/known-issues.md#arch-008)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 
 ## 模板来源
 

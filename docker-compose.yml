@@ -11,15 +11,18 @@ services:
       MYSQL_USER: devsupport
       MYSQL_PASSWORD: devsupport123
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123"]
+      test:
+        - CMD-SHELL
+        - 'MYSQL_PWD="$${MYSQL_PASSWORD}" mysql --protocol=TCP -h127.0.0.1 -u"$${MYSQL_USER}" "$${MYSQL_DATABASE}" -e "SELECT 1" > /dev/null'
       interval: 5s
+      start_period: 30s
       timeout: 5s
       retries: 10
 
@@ -28,7 +31,7 @@ services:
     container_name: devsupport-redis
     restart: unless-stopped
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -57,20 +60,21 @@ services:
       retries: 3
 
   minio:
-    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    # 原 minio/minio 镜像已无法拉取，使用 Milvus 官方 Compose 的固定版本镜像。
+    image: milvusdb/minio:RELEASE.2024-12-18T13-15-44Z
     container_name: devsupport-minio
     restart: unless-stopped
     environment:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     ports:
-      - "9003:9001"
-      - "9002:9000"
+      - "127.0.0.1:9003:9001"
+      - "127.0.0.1:9002:9000"
     volumes:
       - minio_data:/minio_data
     command: minio server /minio_data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "mc", "ready", "local"]
       interval: 30s
       timeout: 20s
       retries: 3
@@ -80,17 +84,22 @@ services:
     container_name: devsupport-milvus
     restart: unless-stopped
     command: ["milvus", "run", "standalone"]
+    security_opt:
+      - seccomp:unconfined
     environment:
+      MINIO_REGION: us-east-1
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
     volumes:
       - milvus_data:/var/lib/milvus
     ports:
-      - "19531:19530"
-      - "9092:9091"
+      - "127.0.0.1:19531:19530"
+      - "127.0.0.1:9092:9091"
     depends_on:
-      - etcd
-      - minio
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 30s

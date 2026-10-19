@@ -1,0 +1,26 @@
+# 本验收镜像专用白名单；不将整个工作区发送给构建器。
+**
+!Dockerfile.verify
+!Makefile
+!backend/
+!backend/pyproject.toml
+!backend/alembic.ini
+!backend/migrations/
+!backend/migrations/**
+!backend/app/
+!backend/app/**
+!backend/scripts/
+!backend/scripts/**
+!backend/tests/
+!backend/tests/**
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.env
+**/.env.*
+**/*.log
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx

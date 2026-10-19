@@ -41,13 +41,13 @@ python -B -m pytest -q -p no:cacheprovider
 | [ARCH-005](#arch-005) | 会话并发与人工接管缺少协调 | P1 | Open | 无 |
 | [ARCH-006](#arch-006) | 脱敏未覆盖输入、存储与全部出口 | P1 | Open | 无 |
 | [ARCH-007](#arch-007) | 知识库发布与缓存版本不一致 | P1 | Open | 无 |
-| [ARCH-008](#arch-008) | 初始化默认删表且缺少增量迁移 | P0 | Open | 无 |
+| [ARCH-008](#arch-008) | 初始化默认删表且缺少增量迁移 | P0 | Resolved | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md) |
 | [ARCH-009](#arch-009) | 演示时间假设进入运行逻辑 | P1 | Open | 无 |
 | [ARCH-010](#arch-010) | 金额和单价使用浮点类型 | P2 | Open | 无 |
 | [ARCH-011](#arch-011) | 评估与业务数据、缓存未隔离 | P1 | Open | 无 |
 | [ARCH-012](#arch-012) | 对话通信缺少完整的失败与取消语义 | P2 | Open | 无 |
 | [ARCH-013](#arch-013) | 异步请求路径包含同步阻塞调用 | P2 | Open | 无 |
-| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | Open | 无 |
+| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | Open | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md) |
 
 <a id="arch-001"></a>
 
@@ -137,13 +137,64 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-008：初始化默认删表且缺少增量迁移
 
-- **状态 / 优先级 / 关联 ADR**：Open / P0 / 无。
-- **现象**：Makefile 的 init-db 固定传 `--recreate`，setup 依赖 init-db；该分支执行 `Base.metadata.drop_all`。不传参数时仅 create_all，仓库未见业务 schema 的增量迁移流程。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P0 / [ADR-0001（Accepted）](../adr/0001-managed-mysql-migrations.md)。
+- **基准现象（2026-10-18）**：Makefile 的 init-db 固定传 `--recreate`，setup 依赖 init-db；该分支执行 `Base.metadata.drop_all`。不传参数时仅 create_all，仓库未见业务 schema 的增量迁移流程。
 - **影响与优先级理由**：在有业务数据的库上重复 setup 会删表；继续增加字段后缺乏保留已有数据的演进路径，应最先消除直接数据风险。
 - **代码证据**：[Makefile](../../Makefile) 的 `init-db`、`setup`；[init_db.py](../../backend/scripts/init_db.py) 的 `main`；[pyproject.toml](../../backend/pyproject.toml) 的依赖及工具配置。
 - **验证方式与结论**：源码确认删表路径；为避免破坏现有数据，本次没有执行 setup、删表或迁移。未来只在一次性测试库验证。
 - **建议方向（待讨论）**：分开安全初始化、增量迁移、种子数据与显式重置；为 schema 演进选择合适的迁移机制。
 - **验收条件**：对有数据的测试库重复安全初始化不丢记录；已有 schema 能按受管理的版本迁移；破坏性重置有独立且明确的入口和说明。
+
+### 2026-10-19 首批修复：默认初始化入口安全化
+
+- **检查与实现基准**：`a7b31fa49401590be79a7755773cbd49d727809e` 加本批未提交变更；保留工作区原有基础设施、依赖、README 和 Supervisor 修改。本批不改变 schema 演进机制，不新建 ADR。
+- **补充源码证据**：[seed_data.py](../../backend/scripts/seed_data.py) 的 `_clear` 会清空 ApiCallLog、ApiKey、App、ApiEndpoint、ErrorCode、Invoice、UsageRecord、User、Tenant、Plan 十类表；[ingest_knowledge.py](../../backend/scripts/ingest_knowledge.py) 的 `main` 固定调用 `ingest_all(recreate=True)`。仅去掉初始化的 `--recreate` 仍不能保证旧版 setup 保留数据。
+- **已实现**：[Makefile](../../Makefile) 的 `init-db`、`setup` 只创建缺失表和集合，不再自动执行 seed/ingest。[init_db.py](../../backend/scripts/init_db.py) 的 `main` 要求同时指定 `--recreate --yes` 才能重建，未确认时在加载存储依赖之前拒绝。新增 `reset-db` 和 `setup-demo` 均先检查 `CONFIRM_RESET=1`，没有执行数据操作的前置依赖；[setup_demo.py](../../backend/scripts/setup_demo.py) 的 `main` 先确认，再依次启动初始化、种子和知识脚本，失败即停止。
+- **行为边界**：直接 seed/ingest 仍保留覆盖行为，README 已明确说明。演示装载和跨存储重置不具有整体事务或自动回滚保证；默认初始化不会修改已有表结构。增量迁移仍待下一批设计和实施，因此不标记 Resolved。
+- **回归证据**：[test_data_setup.py](../../backend/tests/test_data_setup.py) 的 11 项测试通过，覆盖已有集合连续初始化不删不重建、缺失集合仅创建一次、拒绝未确认操作、重置顺序、存储异常和演示步骤失败即停。全部使用存储或子进程替身，不代表真实 MySQL/Milvus 验证。
+- **实际运行结果**：在 tracelet conda 环境、backend 目录关闭无关插件并显式加载 pytest_asyncio，运行本批三个测试文件及既有 `test_model_for_uses_provider_model_mapping`、`test_semantic_cache_key_contains_embedding_fingerprint`、`test_unknown_provider_reports_available_names`，结果 **14 passed、12 skipped**；本批 Python 文件的 Ruff 检查通过。存在 PyMilvus 的 pkg_resources 弃用警告，不据此推导业务故障。
+- **未完成的验证**：[test_make_data_setup.py](../../backend/tests/test_make_data_setup.py) 的 11 项真实 GNU Make 测试因本机缺少 GNU Make 跳过；[test_init_db_mysql.py](../../backend/tests/test_init_db_mysql.py) 因未提供专用管理连接跳过，尚不能宣称真实数据库保留记录验收通过。该测试通过 `TRACELET_TEST_MYSQL_ADMIN_URL` 显式启用，仅在随机生成的独立库中建表、写入和比较完整记录及关联，结束后清理该库；Milvus 仍使用替身。
+- **完整测试环境限制**：既有异步测试停在 Windows asyncio 创建本机 socketpair 的步骤，已中止，未取得本批完整测试结果。两次提权测试请求均因自动审批服务模型容量不足而未执行，不是测试断言失败。Docker API 同样受当前环境访问限制；未对配置库运行重置、种子装载或知识重建。
+
+### 2026-10-19 第二批：独立初始化验收入口
+
+- **实现范围与基准**：仍以 `a7b31fa49401590be79a7755773cbd49d727809e` 加未提交工作区为基准，保留首批及用户已有改动。本批增加测试入口和测试，不改变业务架构或增量迁移策略。
+- **入口与隔离**：[verify_setup.py](../../backend/scripts/verify_setup.py) 的 `main` 同时供 `make verify-setup` 和 PowerShell 调用，显式指定 [compose.verify.yml](../../compose.verify.yml) 及每次随机生成的项目名，清除宿主 Compose 配置来源变量并关闭默认 env-file 加载。独立项目只有测试服务和临时 MySQL；MySQL 健康后才运行完整后端测试。MySQL 使用 tmpfs，运行时为内部网络，没有宿主端口、业务资源复用、宿主目录或 Docker socket 挂载。
+- **构建边界**：[Dockerfile.verify](../../Dockerfile.verify) 使用 Python 3.12、GNU Make 和现有 `[dev]` 依赖，不安装本地模型依赖；[专用构建白名单](../../Dockerfile.verify.dockerignore) 排除真实配置、凭证、模型及缓存。镜像构建及完整依赖安装目前尚未取得实际成功证据。
+- **成功与清理契约**：必须同时取得零执行退出码及有效、非空、零失败/错误/跳过的 JUnit 报告，统计须与测试记录一致。清理前将报告复制到已忽略的 `.pytest_cache/verify/<项目名>/junit.xml`；`finally` 只清理该配置和项目的容器、网络和卷。中断或清理失败返回非零，清理失败打印作用域相同的恢复命令，不会输出“验收通过”。
+- **替身回归证据**：[test_verify_setup.py](../../backend/tests/test_verify_setup.py) 的 30 项编排与报告测试通过，覆盖成功、唯一项目/报告、不受业务 Compose 环境变量影响、依赖或测试失败、报告复制/缺失/解析/统计/跳过问题、进程异常、中断以及清理失败。所有 Docker 子进程使用替身，不能证明真实引擎生命周期。[Make 测试](../../backend/tests/test_make_data_setup.py) 新增 verify-setup 到共享脚本的入口断言，待 GNU Make 环境实际执行。
+- **本机实际检查**：tracelet conda 环境（Python 3.12.15），关闭无关插件、显式加载 pytest_asyncio，并将 pytest 临时目录放在已忽略的缓存中；运行四个初始化/编排测试文件及既有三项同步 provider 测试，结果 **44 passed、13 skipped**。跳过为 12 项 GNU Make 测试和 1 项真实 MySQL 测试；既有异步测试本轮未取得完整执行结果。本批及首批相关 Python 文件 Ruff 检查通过；`docker compose --file compose.verify.yml config --quiet` 成功，并检查解析后的 JSON：仅 mysql、tests 两个服务、无端口/固定容器名/volume 挂载，MySQL 为 tmpfs，默认网络为 internal，tests 依赖 MySQL 健康。另对一项编排单元测试执行真实 pytest JUnit 输出，结果 1 passed，`validate_report` 成功读取并返回 1；该 smoke 不增加独立测试数量，也不代表容器验收。PyMilvus 的 pkg_resources 弃用警告仍存在。
+- **隔离入口实际尝试**：在 backend 目录执行 `python -B -m scripts.verify_setup`，本次项目为 `tracelet-verify-1492c85b6dba4b7c9aa1afac61b15852`；Docker API 访问被拒绝，入口退出码为 1，未取得 JUnit 报告，并明确输出清理失败及限定本次项目的恢复命令。随后提权请求因自动审批服务模型容量不足未执行。尚无真实容器、MySQL 保留记录或完整零跳过验收通过证据，不能把配置校验或替身测试当作替代。
+- **遗留状态**：ARCH-008 保持 In Progress。后续先在允许访问 Docker 且可下载依赖的环境运行该入口，取得完整验收证据；增量迁移仍属下一批任务。未对业务配置库执行初始化、重置、种子装载或知识重建。
+
+### 2026-10-19 增量迁移前置调查与提案
+
+- **已完成调查**：检查基准仍为 `a7b31fa49401590be79a7755773cbd49d727809e` 加当前未提交工作区。当前 ORM 共 19 张受管表，逐表离线编译 MySQL CREATE TABLE 全部成功，`message.created_at` 编译为 DATETIME(6)；仓库及 tracelet 环境尚未配置/安装 Alembic。离线编译不是数据库迁移测试。
+- **方案准备**：新增 [ADR-0001](../adr/0001-managed-mysql-migrations.md)，状态 Proposed；推荐固定初始迁移、已有库校验后显式接管、初始化复用受控升级，并明确版本表、重置、管理操作互斥、非事务性 DDL 和验收边界。尚未修改业务迁移机制，也未登记为 Accepted。
+- **前置验收限制**：独立 Compose 配置复核通过。根据本次继续推进指令再次请求运行隔离验收，但自动审批服务因模型容量不足未执行；没有新增真实 MySQL/完整测试通过证据。前两批替身结果保持原记录，不能当作迁移验收。
+- **待决定事项**：依项目 ADR 规范，用户须对上述具体提案明确决定后，方能实施推荐的重大架构方案及更新正式状态；此前的继续工作授权未对应这份尚不存在的提案版本。环境允许后仍须补齐真实库验证，ARCH-008 保持 In Progress。
+
+### 2026-10-19 第三批：受管迁移与旧库接管实现
+
+- **批准依据**：用户在本聊天针对 ADR-0001 明确回答“接受 ADR-0001 并实施”，已据此更新 ADR 为 Accepted。上节 Proposed 是提案形成时的历史状态；本节实施同一已获准方案，不以 AI 自行决定替代用户批准。基准仍为 `a7b31fa49401590be79a7755773cbd49d727809e` 加未提交工作区。
+- **固定历史**：新增 Alembic 依赖及迁移环境；[初始 revision](../../backend/migrations/versions/0001_initial_schema.py) 使用 [冻结定义](../../backend/migrations/baseline.py) 建立 19 张业务表，不调用当前 ORM 的 create_all。保留现有字段类型及 DATETIME(6)，不夹带业务变更；版本由 alembic_version 管理。
+- **受控入口**：[migrate_db.py](../../backend/scripts/migrate_db.py) 提供 current、check、upgrade、adopt-baseline --yes。[schema_migrations.py](../../backend/app/schema_migrations.py) 只允许空库或已知单链版本升级；非空未登记库拒绝升级，须校验冻结基线后显式接管。重复接管不再次 stamp，head 升级只校验；未知版本、分支历史及不兼容结构返回非零，不自动修补。MySQL 写命令复用同一连接并持有按数据库名区分的零等待 advisory lock。
+- **结构边界**：[schema_compare.py](../../backend/app/schema_compare.py) 比较表/列、类型和精度、默认值、nullable、自增、主键、唯一约束、索引和外键，按语义处理名称、整数显示宽度、Boolean/TINYINT(1) 及外键支持索引。视图、触发器和存储例程检测到即拒绝；检查依赖账号对 schema 的可见性，不承诺覆盖所有 MySQL 对象或任意定制库。
+- **初始化兼容变化**：init-db/setup 现改为受控 MySQL 升级后确保 Milvus 集合存在；旧的未登记非空库将安全拒绝，需要先检查/接管。显式重置会清理受管业务表和版本表，再通过迁移历史重建；有未受管对象/表或未知版本则拒绝。MySQL 失败时不会继续操作 Milvus；跨存储重置不承诺事务原子性。README 已补安装依赖、接管、升级、迁移开发及恢复说明。
+- **隔离验收更新**：测试镜像及专用构建白名单已包含 alembic.ini 和迁移历史。真实库测试复用 [mysql_engine fixture](../../backend/tests/conftest.py)，只使用显式测试管理连接创建的随机独立库，并检查实际选中的数据库名；不使用应用配置库。
+- **实际通过证据**：tracelet 的 Python 3.12.15/SQLAlchemy 2.1.5 环境中，使用本机 rag 环境已有 Alembic 1.20.0、Mako 1.4.3 的副本，仅放入已忽略的 `.pytest_cache/migration-deps` 并通过 PYTHONPATH 临时加载，未修改两个 conda 环境。运行现有可执行同步测试和本批测试，结果 **79 passed、25 skipped**；其中 [迁移单元测试](../../backend/tests/test_schema_migrations.py) 34 项通过。真实 Alembic 离线生成 19 张业务表加版本表的 MySQL SQL，包含 DATETIME(6)、没有 DROP TABLE；冻结结构与当前 ORM 比较无差异。相关 Python 文件 Ruff、Compose 配置及差异检查通过。这些证据不证明真实 MySQL 迁移成功。
+- **待实测项目**：25 项跳过为 12 项 GNU Make 入口测试及 13 项真实 MySQL 测试（含 [新增的 12 项迁移场景](../../backend/tests/test_schema_migrations_mysql.py)）。真实场景覆盖旧库接管、字段/索引漂移拒绝、未知版本、只读命令、显式重置、管理锁和临时第二条 revision 的成功/中途失败；测试字段只存在临时迁移目录，不进入生产历史。既有 5 项异步 provider 测试本轮未取得执行结果。
+- **仍未完成的前置验收**：本轮 Docker 隔离验收和临时目录包源安装的提权请求均因自动审批服务模型容量不足未执行；沙箱内 Docker API/包源代理仍不可访问。已采用本机现有依赖完成离线及替身验证，但不能替代真实 MySQL、Docker 生命周期及完整零跳过验收。未对当前业务库执行迁移、接管、重置或种子装载；ARCH-008 保持 In Progress，待真实验证满足完整验收条件后再标记 Resolved。
+
+### 2026-10-19 完整隔离验收完成
+
+- **状态依据**：已完成上述受管迁移实现及下列真实 MySQL/完整套件验收，ARCH-008 更新为 Resolved。仍以 `a7b31fa49401590be79a7755773cbd49d727809e` 加当前未提交变更为实现基准。前述审批、网络及部分测试记录保留为历史；本状态不表示已经接管或迁移用户当前业务库。
+- **环境前置完成**：本次提权验收得到执行。Docker 首次因 Python 镜像的 Docker Hub 认证连接超时而构建失败，随后通过主机已有代理从官方 registry 预取 linux/amd64 镜像，校验清单、配置和每层 SHA-256 后导入本机缓存；没有修改 Docker 全局代理设置，一次性下载包已删除。tracelet 开发环境已成功执行 `python -B -m pip install -e ".[dev]"`，正式安装 Alembic 1.20.0、Mako 1.4.3 和当前后端，不再依赖临时副本。
+- **全新安装发现并修复的兼容问题**：首次实际套件为 102 passed、1 failed、6 errors，失败均来自 PyMilvus 2.4.15 导入已被 Setuptools 84 移除的 pkg_resources。已在 [pyproject.toml](../../backend/pyproject.toml) 增加运行依赖 `setuptools>69,<82`；移除发生在 Setuptools 82，参见 [官方变更记录](https://github.com/pypa/setuptools/blob/main/NEWS.rst)（2026-10-19 经 Context7 核查）。这不改变 Milvus/SDK 版本或业务字段。
+- **最终执行方法与环境**：在 backend 目录执行 `python -B -m scripts.verify_setup`，项目为 `tracelet-verify-85e92d7172014f2187da1b0ef95c1805`。Python 3.12.15、MySQL 8.0.46、SQLAlchemy 2.1.5、Alembic 1.20.0、PyMilvus 2.4.15、Setuptools 81.0.0、pytest 9.1.1；从当前 `[dev]` 依赖构建镜像，不安装本地模型。MySQL 使用独立内部网络和 tmpfs，测试只创建和删除随机独立测试库。
+- **最终结果**：**109 passed，0 failed，0 errors，0 skipped**，编排入口退出码 0。包括 13 项真实 MySQL 初始化/迁移场景、12 项真实 GNU Make 入口测试及既有 8 项 provider 测试。接管前拒绝普通升级、校验后仅登记版本、保留完整业务记录及关联、重复升级、结构漂移/未知版本拒绝、只读命令、重置版本表、管理锁、临时增量 revision 和非事务性 DDL 失败均取得实际断言证据；向量、Redis、模型和演示子进程仍使用替身，不据此声称真实 Milvus 或外部模型通过验证。
+- **报告与清理证据**：报告保存在本机已忽略的 `.pytest_cache/verify/tracelet-verify-85e92d7172014f2187da1b0ef95c1805/junit.xml`，再次通过 validate_report 检查为 109 项、零失败/错误/跳过。编排 finally 完成清理后返回成功；另按 Compose 项目标签查询，容器、网络和卷均无遗留。镜像内 `python -m pip check` 返回 No broken requirements found。相关 Ruff、Compose 配置、文档链接及 Git 差异检查通过，报告/依赖缓存未纳入版本管理。
+- **证据边界**：保留 23 条弃用警告，来自 SDK 的 pkg_resources 及模型的 datetime.utcnow；不影响本次通过判定，也未掩盖它们。未测量性能或锁表时间，没有自动重试失败 DDL、修改业务库或运行演示装载；旧库须依 README 先在副本核查，再显式接管。
 
 <a id="arch-009"></a>
 
@@ -209,13 +260,17 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-014：关键业务不变量缺少持久化回归测试
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
-- **现象**：当前 tests 只有模型 provider 相关的 8 项测试；评估集关注生成结果，不能替代权限、状态一致性、幂等或并发的确定性测试。此前发现的 6 种异常仅做过一次性 mock。
+- **状态 / 优先级 / 关联 ADR**：Open / P1 / [ADR-0001（Accepted）](../adr/0001-managed-mysql-migrations.md)。
+- **基准现象（2026-10-18）**：tests 只有模型 provider 相关的 8 项测试；评估集关注生成结果，不能替代权限、状态一致性、幂等或并发的确定性测试。此前发现的 6 种异常仅做过一次性 mock。
 - **影响与优先级理由**：模型接入测试通过仍无法拦住已确认的业务问题；修复核心边界前后需要可重复的保护。
 - **代码证据**：[test_llm_providers.py](../../backend/tests/test_llm_providers.py) 的 8 个 `test_*`；[run_eval.py](../../backend/eval/run_eval.py) 的 `evaluate`；[pyproject.toml](../../backend/pyproject.toml) 的 pytest 配置。
 - **验证方式与结论**：源码确认测试范围；同日单元测试 8 passed，mock 结果见下表。未测量代码覆盖率，不以测试数量推导可靠性。
 - **建议方向（待讨论）**：针对 ARCH-001 至 ARCH-008 等问题补充可观察业务不变量的测试；纯逻辑使用 fake，事务、隔离和提交语义使用隔离数据库验证。
 - **验收条件**：权限拒绝、重复请求、建单与接管一致性、无命中、缓存故障、人工竞争和知识发布失败均有可重复验证；测试不依赖生产数据或清理业务缓存。
+- **2026-10-19 覆盖增补**：随 [ARCH-008 首批修复](#arch-008) 新增初始化保护、演示装载顺序、GNU Make 入口及可选独立 MySQL 测试。当前仅有前述 11 项新测试和 3 项既有同步测试通过；GNU Make、真实 MySQL 及完整异步测试的限制见该节。权限、幂等、接管、发布失败等其他业务不变量仍待补齐，本问题保持 Open。
+- **2026-10-19 第二批覆盖增补**：增加 30 项隔离验收编排与 JUnit 报告检查测试并通过；新增 Make 验收入口测试尚因缺少 GNU Make 跳过。当前本机部分运行合计 44 passed、13 skipped，独立容器实际验收仍受 Docker 访问及自动审批服务限制，详见 [ARCH-008 第二批记录](#arch-008)。本问题继续保持 Open。
+- **2026-10-19 第三批覆盖增补**：ADR-0001 已获用户接受，新增 34 项离线/替身迁移测试并通过，以及 12 项待真实 MySQL 执行的迁移场景；初始化拒绝未接管库时不触碰向量服务的测试也通过。当前本机可执行部分共 79 passed、25 skipped，真实迁移及完整异步验收的缺口见 [ARCH-008 第三批记录](#arch-008)。尚未覆盖本清单其他全部业务不变量，继续保持 Open。
+- **2026-10-19 验收补齐**：隔离完整套件实际取得 109 passed、零失败/错误/跳过，补齐上述 MySQL、Make 及既有异步测试的执行缺口，详见 [ARCH-008 完整隔离验收](#arch-008)。本问题继续保持 Open：权限、工具幂等、人工竞争、知识发布失败等其他业务不变量仍需随对应修复补测试，不能由当前套件数量推导已覆盖。
 
 ## 六个 mock 场景的复核说明
 

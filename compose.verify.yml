@@ -1,0 +1,52 @@
+# 独立使用此文件，不与业务 docker-compose.yml 合并。
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: tracelet_verify_only
+      MYSQL_ROOT_HOST: "%"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'MYSQL_PWD="$${MYSQL_ROOT_PASSWORD}" mysql --protocol=TCP -h127.0.0.1 -uroot -e "SELECT 1" > /dev/null'
+      interval: 2s
+      timeout: 5s
+      start_period: 20s
+      retries: 45
+
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile.verify
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      TRACELET_TEST_MYSQL_ADMIN_URL: mysql+pymysql://root:tracelet_verify_only@mysql:3306/
+      MYSQL_HOST: mysql
+      MYSQL_USER: root
+      MYSQL_PASSWORD: tracelet_verify_only
+      MYSQL_DB: unused_runtime_config
+      REDIS_URL: redis://127.0.0.1:1/0
+      MILVUS_URI: http://127.0.0.1:1
+    command:
+      - python
+      - -B
+      - -m
+      - pytest
+      - -q
+      - -rs
+      - -p
+      - no:cacheprovider
+      - -p
+      - pytest_asyncio.plugin
+      - --junitxml=/tmp/tracelet-verify.xml
+
+networks:
+  default:
+    internal: true

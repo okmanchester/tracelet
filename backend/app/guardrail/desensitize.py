@@ -1,6 +1,7 @@
 """不可逆的文本与结构化脱敏；不因字段名像业务 ID 就放行。"""
 
 import json
+import math
 import re
 
 
@@ -77,6 +78,10 @@ def _clean(obj, *, mask_fields=True):
     if isinstance(obj, (list, tuple)):
         return [_clean(value, mask_fields=mask_fields) for value in obj]
     if obj is None or isinstance(obj, bool):
+        return obj
+    # 归一化向量和概率是数值，不是小数点后恰好有 16 位的银行卡号。
+    # 显式 phone/api_key 等字段已在上方整体遮盖；大数和自由文本仍按原规则处理。
+    if isinstance(obj, float) and math.isfinite(obj) and -1.0 <= obj <= 1.0:
         return obj
     if isinstance(obj, (int, float)):
         raw = str(obj)

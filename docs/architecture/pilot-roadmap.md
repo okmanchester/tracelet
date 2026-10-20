@@ -161,3 +161,18 @@ ARCH-002、003、004、005、009 据上述限定范围证据更新为 Resolved�
 - **验证内容**：[test_second_batch_mysql.py](../../backend/tests/test_second_batch_mysql.py) 增补真实 SQL 的超时/真实 Supervisor 兜底保留实体、模型输出/建单内容安全故障及恢复故障固定 500、伪动作承诺与诊断建单模式、卡片/引用出口、人工确认及 closed/resolved 工单重建。另保留“无命中可选择人工”解释，不因动作校验而转人工或清空解释。API 使用生产安全异常处理器，安全故障断言无助手消息、工单、反馈或附属任务提交。安全故障不会保存可重试不安全草稿；已接收操作的租期自然失效后才可按原 ID 再查/重试。
 - **验收结果**：本轮最终执行 `python -B -m scripts.verify_setup`，随机项目 `tracelet-verify-0400f44922e6423c8cffccbe86f1865a`，独立 MySQL 8.0.46 / Redis 7.4.11，**250 passed，0 failed，0 errors，0 skipped**，入口退出码 0，finally 清理完成。报告保留于已忽略的 `.pytest_cache/verify/tracelet-verify-0400f44922e6423c8cffccbe86f1865a/junit.xml`；前一轮 249 项通过报告另行保留（后新增无命中出口用例）。前端最终 `npm test` **16 passed**，类型检查和生产构建通过，保留既有大包提示；相关 Ruff、差异及文档链接检查通过。
 - **限制**：动作检查为保守话术规则，可能替换掉同条回答中的诊断内容，不能据此声称任意模型话术已被形式验证。前端仅函数测试及类型/构建验证，真实依赖与浏览器准入继续保留；本次未向业务库部署。
+
+<a id="third-batch-verification"></a>
+
+## 2026-10-20 第三批准入实现与执行记录
+
+- **范围与授权**：用户明确要求实施本聊天中的第三批完整计划，采用停止等待并保留查询、Playwright Chromium 自动化。检查基准为 `973d4c8d56d2eaa0d2c916ec904cc77a7aef7226` 加本批工作区；沿用 Accepted ADR，不新增服务端取消、公共写接口或迁移。操作说明见 [准入验收说明](pilot-acceptance.md)。
+- **通信实现**：聊天、反馈、查询统一使用可中断请求，卸载/停止后旧回调不再更新当前页面。保留原 UUID，查询认证过期引导重新登录，重试时撤回先前的重试许可。SSE 按事件边界解析 UTF-8、CRLF、多行 data 和注释，有效 done 仅完成一次并结束读取；错误正文与解析异常不直接展示。
+- **隔离实现**：新增随机独立 MySQL/Redis/Milvus 及 etcd/MinIO 编排；本次端口随机分配后保持固定，后端与前端为独立宿主进程。迁移和合成装载只操作匹配的随机库与知识集合，真实登录取得 JWT；模型走现有厂商，本地 BGE 实际推理。测试代理单独承担受控错误与截断，生产应用没有新增测试端点。报告与快照均保存在已忽略目录。
+- **真实链路发现并修复**：高精度归一化浮点数的小数部分会命中银行卡正则，导致 rerank score 与缓存向量被转成字符串，真实 RAG 因而进入技术失败。已用本地 BGE 分数复现；仅对 `[-1, 1]` 内有限 float 保留数值，显式敏感字段仍整体遮盖，大数、数字型手机号/银行卡及自由文本继续脱敏。新增反例和数值回归，未改变知识阈值、模型或接口。另修复验收自身的 Ant Design 双字按钮定位器与依赖重启后随机端口改变问题。
+- **知识恢复边界修正**：同结构 HNSW/自动主键集合重启后，健康及 load 返回时曾短暂读到零行，服务日志仍在加载持久化分片。单独改 Strong 不足以通过；现以 SQL 文档切片清单为预期，在 60 秒内等待 Strong 查询的行数和计数全部一致才保存快照，空清单或超过 2000 个切片拒绝演练。恢复后同样等待完整数据并逐字段比较，包括向量和元信息；不通过重新生成向量掩盖未恢复的数据。本轮没有由这些短暂空读推导永久数据丢失或更换 Milvus 版本。
+- **完整后端与前端**：最终 `python -B -m scripts.verify_setup` 项目为 `tracelet-verify-e3caafb6b6974b478f728762af641d80`，独立 MySQL 8.0.46、Redis 7.4.11，**272 passed、0 failed、0 errors、0 skipped**，入口退出码 0，报告位于 `.pytest_cache/verify/<本次项目>/junit.xml`。新增 11 项数值隐私回归和 11 项准入脚本保护测试；前端 `npm test` 为 **26 passed**，`npm run typecheck:e2e` 及 `npm run build` 通过，保留既有包体积和弃用提示。辅助脚本超时清理、清理期间拒绝迟到启动及清理命令可完成，另使用本机实际短命子进程取得验证。
+- **真实依赖及浏览器结果**：最终 `python -B -m scripts.verify_pilot` 项目为 `tracelet-pilot-6d372a8fec9840999fab298d9fa8d4a6`，**15 passed、0 failed、0 errors、0 skipped**，入口退出码 0，`summary.json` 的 passed/cleanup 均为 true。实际使用 MySQL **8.0.46**、Redis **7.2.16**、Milvus **2.4.13 镜像**及 PyMilvus **2.4.15**、本地 BGE embedding/rerank；DeepSeek **deepseek-flash / deepseek-v4-pro** 正常请求取得真实响应。宿主 Python **3.12.15**、FastAPI **0.143.3**、OpenAI SDK **3.35.1**、Sentence Transformers **6.1.0**、SQLAlchemy **2.1.5**；Node **22.14.0**、Playwright **1.64.1**、Chromium **156.0.8078.4**。模型代理合计观察 16 次尝试，包含受控失败尝试，不据此计算费用。
+- **可定位报告与清理**：本机 `.pytest_cache/pilot/<本次项目>/` 保存 `browser.xml`、`summary.json`、`privacy.json`、`knowledge-backup.json`、`knowledge-recovery.json` 和运行日志，均被忽略。隐私检查中 SQL 21 张业务表、Redis 4 个键、Milvus 66 个切片均未命中合成秘密标记，模型外发同样未命中。维护演练在第一条成功写入后由错误向量维度触发真实插入失败，恢复 66 个切片并逐字段比较，通过重启后的 RAG 引用验证。入口完成清理；按精确项目标签只读复核本次验收和排障项目，容器、网络、卷均无遗留。JUnit 报告再次由 validate_report 核对；此前失败报告保留，不与最终报告拼接成通过结果。
+- **准入结论**：本轮约定的合成数据、本机独立真实依赖及 Chromium 准入条件已满足，可以进入按既有限制的小范围试用部署准备。尚未向现有开发/试用库执行迁移、装载或部署，也未开放真实用户；实际部署继续按既有受控迁移、固定知识维护及协调发布约定执行。
+- **剩余边界**：停止等待不申请服务端取消；仅 Chromium、合成数据及本机独立依赖，未验证正式部署拓扑、真实客户数据、吞吐或成本。知识恢复是停服快照恢复，不是在线发布。ARCH-012、014 继续 In Progress；ARCH-007、010、011、013、015、016 延续原边界。

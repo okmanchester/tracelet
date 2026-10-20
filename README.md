@@ -188,9 +188,13 @@ make eval     # 跑标准评估集，输出意图/引用/脱敏等指标
 make bench    # 并发压测 + 阶段耗时分解 + 缓存优化前后对比
 ```
 
-试用推进顺序、准入条件与延期限制见 [推进路线](docs/architecture/pilot-roadmap.md)。第一批权限和敏感数据边界已通过限定范围的隔离验收；第二批业务一致性与第三批真实链路准入尚待完成，当前不开放真实试用。
+试用推进顺序、准入条件与延期限制见 [推进路线](docs/architecture/pilot-roadmap.md)。第一、二批已取得限定范围隔离验收；第三批增加独立真实依赖和 Chromium 准入入口，实际结果以路线中的最新验收记录为准。通过验收不自动部署或开放真实用户访问。
 
 前端通信回归可在 `frontend` 目录运行 `npm test`；`npm run build` 检查类型并生成构建产物。测试使用现有 TypeScript 与 Node 内置测试器，不启动真实业务服务。
+
+第三批真实链路验收在 `backend` 目录执行 `python -B -m scripts.verify_pilot`；它创建专用随机 MySQL、Redis、Milvus 环境，通过真实登录和配置的外部模型验证合成业务。首次运行先在 `frontend` 执行 `npm ci`、`npx playwright install chromium`，并准备后端 `[dev,local]` 依赖和本地 BGE 模型。完整准备、故障注入边界、报告和清理方法见 [准入验收说明](docs/architecture/pilot-acceptance.md)。
+
+聊天、反馈和操作查询支持“停止等待”，保留原操作 UUID 供稍后查询；此操作不申请服务端取消。断流和停止后先查询结果，再按服务端返回状态重试原请求；不会自动换 UUID 重放。
 
 ## 常见问题
 
@@ -222,7 +226,7 @@ python -m scripts.verify_setup
 
 前置条件是 Docker 的 Linux 容器引擎可访问、Docker Compose v2 可用，并且构建时能够下载基础镜像、系统包和 Python 依赖。宿主机只执行标准库编排脚本；GNU Make 和完整后端测试在 Python 3.12 测试镜像中运行，使用现有 `[dev]` 依赖，不安装 `[local]` 模型依赖。
 
-入口只使用独立的 `compose.verify.yml`。每次生成 `tracelet-verify-<随机值>` 项目名，启动临时 MySQL 8.0，等待健康后运行完整后端测试。MySQL 数据使用 tmpfs；不发布宿主机端口，不复用业务容器、网络或数据卷，不挂载宿主目录或 Docker socket。运行时使用内部网络；真实 MySQL 测试仍只操作它自己生成的一次性库，Milvus、Redis、模型及演示子进程使用现有测试替身。
+入口只使用独立的 `compose.verify.yml`。每次生成 `tracelet-verify-<随机值>` 项目名，启动临时 MySQL 8.0 和 Redis，等待健康后运行完整后端测试。MySQL 数据使用 tmpfs；不发布宿主机端口，不复用业务容器、网络或数据卷，不挂载宿主目录或 Docker socket。运行时使用内部网络；真实 MySQL 测试仍只操作它自己生成的一次性库，Redis 测试使用本次独立服务，Milvus、模型及演示子进程使用现有测试替身。真实 Milvus、BGE、模型与浏览器另由 `verify_pilot` 验证。
 
 构建使用 `Dockerfile.verify.dockerignore` 白名单，只发送所需源码、测试、迁移配置及历史、依赖声明和 Makefile，不发送 `.env`、凭证或模型。宿主机的 Compose 文件、项目名、profiles 和 env-file 环境变量不会带入本次编排。
 

@@ -45,7 +45,7 @@ export const listConversations = () => api.get("/conversations").then((r) => r.d
 export const getConversation = (id: string) => api.get(`/conversations/${id}`).then((r) => r.data);
 export const sendCustomerMessage = (id: string, content: string) => api.post(`/conversations/${id}/messages`, { content }).then((r) => r.data);
 export const myTickets = () => api.get("/tickets").then((r) => r.data);
-export const submitFeedback = (body: any) => api.post("/feedback", body).then((r) => r.data);
+export const submitFeedback = (body: any, signal?: AbortSignal) => api.post("/feedback", body, { signal }).then((r) => r.data);
 export const wbTickets = (params: any) => api.get("/workbench/tickets", { params }).then((r) => r.data);
 export const wbTicketDetail = (id: string) => api.get(`/workbench/tickets/${id}`).then((r) => r.data);
 export const wbUpdateTicket = (id: string, body: any) => api.post(`/workbench/tickets/${id}`, body).then((r) => r.data);

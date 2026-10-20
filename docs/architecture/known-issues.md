@@ -4,7 +4,9 @@
 
 2026-10-19 已形成用户要求实施的 [试用推进路线](pilot-roadmap.md)：先完成访问与数据边界，再补业务闭环和试用准入；ADR-0002、0003 已由用户明确接受并授权实施，正式状态以各项决定与验收记录为准。
 
-2026-10-20 第二批已获用户明确接受 ADR-0004 至 0007 并授权实施；ARCH-002、003、004、005、009 已取得 [第二批隔离验收](pilot-roadmap.md#second-batch-verification)，仍须完成第三批真实依赖及浏览器准入。
+2026-10-20 第二批已获用户明确接受 ADR-0004 至 0007 并授权实施；ARCH-002、003、004、005、009 已取得 [第二批隔离验收](pilot-roadmap.md#second-batch-verification)。后续第三批准入结果见下方。
+
+2026-10-20 第三批按用户确认的“停止等待并保留查询、Chromium 自动化”完成：完整隔离后端 **272 passed**、前端 **26 passed**、真实依赖 Chromium **15 passed**，均零失败/错误/跳过。入口和证据解释见 [准入验收说明](pilot-acceptance.md)，实际执行结果见 [第三批记录](pilot-roadmap.md#third-batch-verification)。满足本轮合成数据、本机独立环境的准入条件，可进入受限小范围试用部署准备；本轮没有部署或开放真实用户。完整服务端取消仍延期，ARCH-012、014 保持 In Progress。
 
 ## 检查基准与证据边界
 
@@ -147,6 +149,8 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-19 脱敏实施**：同一实现基准下，[desensitize.py](../../backend/app/guardrail/desensitize.py) 完整替换已识别敏感值，覆盖短凭证、结构化敏感字段、数字值、JSON/Unicode 转义及重复处理，合法业务 ID 不因长十六进制片段而误遮盖；字段名不是豁免。入口、模型门面、Redis 记忆/路由/答案缓存、知识入库/展示、工单、Trace、工具/审计日志及人工回复使用同一能力。Supervisor 的 `_finalize_result` 处理正常、缓存、澄清、工单提示及管线兜底；HTTP 验证错误和异常不回显原文，日志省略原始 traceback。
 - **2026-10-19 验收证据与边界**：[test_pilot_privacy.py](../../backend/tests/test_pilot_privacy.py) 的 **36 项**替身测试覆盖模型 chat/stream、embedding、rerank、跨 chunk 凭证、Redis、真实编排图各出口、日志与错误处理；MySQL 测试另外验证真实消息/工单/Trace/工具日志/审计字段，以及输入处理失败无写入。完整隔离套件 **171 passed，零失败/错误/跳过**，见 [第一批验收](pilot-roadmap.md#first-batch-verification)。本状态仅针对 ADR-0003 定义的数据类型和处理边界，检测并不保证识别任意秘密；Redis、向量和模型使用替身，真实服务链路留待第三批；未扫描或改写旧业务数据，试用仍要求全新独立环境。ARCH-006 在上述边界内更新为 Resolved。
 
+- **2026-10-20 第三批补验与误判修复**：真实 BGE 分数的小数尾数会误命中银行卡规则，导致分数和归一化缓存向量变成字符串。现保留 `[-1, 1]` 内有限 float 的数值类型，显式敏感字段、大数及自由文本仍按原规则脱敏；新增 [数值及敏感反例回归](../../backend/tests/test_privacy_numeric_vectors.py) 11 项。真实模型代理未观察到合成秘密标记；独立 SQL 的 21 张业务表、Redis 的 4 个键及 Milvus 的 66 个切片扫描均零命中，见 [第三批记录](pilot-roadmap.md#third-batch-verification)。仅证明这些合成标记和已约定边界，不保证任意敏感信息均可识别；不修改旧业务数据。
+
 <a id="arch-007"></a>
 
 ## ARCH-007：知识库发布与缓存版本不一致
@@ -278,6 +282,8 @@ python -B -m pytest -q -p no:cacheprovider
 
 - **2026-10-20 通信补充**：前端识别 202/409，缺少 done 的中断进入待确认状态；保持原 UUID 查询/重试，刷新不保存输入正文。函数级通信和本地状态共 15 项测试及构建通过；仍未做真实浏览器断网、取消及代理故障，保持 In Progress。
 
+- **2026-10-20 第三批实现**：聊天、反馈和操作查询接受可选 AbortSignal；停止等待及页面卸载终止本地请求，执行代次屏蔽迟到回调。查询认证失效提示重新登录并保留 UUID；重试后撤回旧的 can_retry，须再次查询确认。SSE 按完整事件处理 UTF-8、CRLF、多行 data、注释与完成事件，done 后结束读取并释放资源。服务端接口、事实来源、提交与接管契约不变；完整取消仍未实现，状态继续 In Progress。实际浏览器与真实依赖证据见 [第三批记录](pilot-roadmap.md#third-batch-verification)。
+
 <a id="arch-013"></a>
 
 ## ARCH-013：异步请求路径包含同步阻塞调用
@@ -310,6 +316,8 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-19 试用第一批覆盖增补**：新增 20 项离线任务保护、36 项隐私边界和 6 项真实 MySQL 测试，后者在测试内部遍历角色/资源/动作矩阵。完整套件实际为 **171 passed，零失败/错误/跳过**；前端另有 7 项通信回归及构建通过，详见 [第一批验收](pilot-roadmap.md#first-batch-verification)。当前已补齐权限、敏感数据边界与评估禁用场景，幂等、恢复、人工竞争、知识发布失败等仍需后续测试，因此保持 In Progress。
 
 - **2026-10-20 第二批覆盖**：完整隔离 **238 passed，零失败/错误/跳过**，包含图结果、幂等、真实 SQL 提交/竞争/恢复及独立 Redis 过期/投影/消费去重；前端另 15 项及构建通过。验收环境、失败修正及证据边界见 [第二批验收](pilot-roadmap.md#second-batch-verification)。ARCH-014 继续 In Progress，知识发布失败等延期能力的不变量仍待对应实施，不能由测试总数推导已经覆盖。
+
+- **2026-10-20 第三批覆盖**：完整隔离后端 **272 passed**，前端 **26 passed**，独立真实依赖及 Chromium **15 passed**，均零失败/错误/跳过；前端类型/构建、浏览器测试类型检查通过。新增数字误判反例、脚本隔离/清理保护、知识恢复就绪边界与真实登录/断流/竞争/进程及依赖故障场景；知识维护演练恢复 66 个切片并逐字段核对，再验证引用。报告与范围见 [第三批记录](pilot-roadmap.md#third-batch-verification)。在线知识发布、完整取消等延期能力仍未完成，本问题继续 In Progress。
 
 <a id="arch-015"></a>
 

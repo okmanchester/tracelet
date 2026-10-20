@@ -8,7 +8,7 @@ const source = await readFile(new URL("../src/chatStream.ts", import.meta.url), 
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
 });
-const { chatStream } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
+const { chatStream, queryOperation } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`);
 
 function browser(t, response) {
   t.mock.method(globalThis, "fetch", async () => response);
@@ -102,3 +102,54 @@ for (const [code, rejected] of [["conversation_busy", true], ["request_conflict"
       (error) => error.rejected === rejected && error.conflict === (code === "request_conflict"));
   });
 }
+
+test("逐字节 CRLF、多行 data、注释及空事件保持文本换行", async (t) => {
+  const bytes = new TextEncoder().encode(': ping\r\n\r\nevent: token\r\ndata: 第一行\r\ndata: 第二行\r\n\r\n'
+    + 'event: done\r\ndata: {"answer":"完成"}\r\n\r\n');
+  const body = new ReadableStream({ start(c) { for (const b of bytes) c.enqueue(Uint8Array.of(b)); c.close(); } });
+  browser(t, new Response(body));
+  const tokens = [];
+  await chatStream("probe", null, { onToken: (v) => tokens.push(v) });
+  assert.deepEqual(tokens, ["第一行\n第二行"]);
+});
+
+test("done 后立刻结束等待，取消仍打开的流且不重复完成", async (t) => {
+  let cancelled = false;
+  const body = new ReadableStream({
+    start(c) { c.enqueue(new TextEncoder().encode('event: done\ndata: {}\n\nevent: done\ndata: {}\n\n')); },
+    cancel() { cancelled = true; },
+  });
+  browser(t, new Response(body));
+  let completions = 0;
+  await chatStream("probe", null, { onDone: () => completions++ });
+  assert.equal(completions, 1);
+  assert.equal(cancelled, true);
+  assert.equal(body.locked, false);
+});
+
+for (const payload of ['{secret-invalid', 'null', '[]', '{"operation_status":"processing"}', '{"request_id":"other"}']) {
+  test(`非法完成事件不触发完成回调：${payload.slice(0, 20)}`, async (t) => {
+    browser(t, new Response(`event: done\ndata: ${payload}\n\n`));
+    await assert.rejects(chatStream("probe", null, { onDone: () => assert.fail("不能完成") }), /响应格式无效/);
+  });
+}
+
+test("主动中断传递 signal 并释放 reader", async (t) => {
+  const controller = new AbortController();
+  const body = new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode('event: token\ndata: partial\n\n')); } });
+  browser(t, new Response(body));
+  await assert.rejects(chatStream("probe", null, { onToken: () => controller.abort() }, undefined, controller.signal),
+    (error) => error.name === "AbortError");
+  assert.equal(fetch.mock.calls[0].arguments[1].signal, controller.signal);
+  assert.equal(body.locked, false);
+});
+
+test("查询 401 提示重新登录且不清除原请求", async (t) => {
+  browser(t, new Response("private", { status: 401 }));
+  await assert.rejects(queryOperation("chat", "id"), (e) => /重新登录/.test(e.message) && !e.rejected);
+});
+
+test("查询响应属于其他 UUID 时不能接受结果", async (t) => {
+  browser(t, new Response(JSON.stringify({ request_id: "other", operation_status: "succeeded" })));
+  await assert.rejects(queryOperation("chat", "original"), /暂时无法查询/);
+});

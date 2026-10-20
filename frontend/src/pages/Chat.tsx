@@ -1,9 +1,9 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Card, Input, Button, Tag, Space, Typography, Avatar, Popconfirm, message as antMsg } from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { chatStream, currentUser, submitFeedback } from "../api";
-import { ChatRequestError, queryOperation } from "../chatStream";
+import { ChatRequestError, queryOperation, requestError } from "../chatStream";
 import DiagnosisCard from "../components/DiagnosisCard";
 import Highlight from "../components/Highlight";
 import { PendingOperation as Pending, messagesAfterFailure, persistPending, restorePending } from "../pendingOperation";
@@ -30,6 +30,25 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const convId = useRef<string | null>(null);
+  const generation = useRef(0);
+  const active = useRef<AbortController | null>(null);
+  useEffect(() => () => { generation.current++; active.current?.abort(); active.current = null; }, []);
+  const begin = () => {
+    const controller = new AbortController();
+    active.current = controller;
+    const current = ++generation.current;
+    setSending(true);
+    return { signal: controller.signal, valid: () => current === generation.current };
+  };
+  const stop = () => {
+    generation.current++;
+    active.current?.abort();
+    active.current = null;
+    setSending(false);
+    if (pending) setPending({ ...pending, can_retry: false });
+    setMsgs((prev) => prev.map((m) => ({ ...m, streaming: false })));
+    antMsg.info("已停止等待，请查询处理结果；此操作不会取消服务端处理。");
+  };
   const setPending = (value: Pending | null) => {
     setPendingState(value);
     persistPending(sessionStorage, storageKey, value);
@@ -49,8 +68,9 @@ export default function Chat() {
     setPending(null);
   };
   const execute = async (operation: Pending, attemptId?: string) => {
-    setSending(true);
-    setPending(operation);
+    if (active.current) return;
+    const attempt = begin();
+    setPending({ ...operation, can_retry: false });
     if (operation.kind === "chat") setMsgs((prev) => {
       const placeholder: Msg = { role: "assistant", content: "", streaming: true, request_id: operation.request_id };
       const index = prev.findIndex((m) => m.role === "assistant" && m.request_id === operation.request_id);
@@ -58,29 +78,34 @@ export default function Chat() {
     });
     try {
       if (operation.kind === "feedback") {
-        const result = await submitFeedback({ ...operation.payload, request_id: operation.request_id });
+        const result = await submitFeedback({ ...operation.payload, request_id: operation.request_id }, attempt.signal);
+        if (!attempt.valid()) return;
         if (result.operation_status !== "succeeded") throw new ChatRequestError("反馈正在处理中，请查询进度");
         acceptResult(result);
       } else {
         await chatStream(operation.payload.message, operation.payload.conversation_id, {
-          onMeta: (meta) => { convId.current = meta.conversation_id; },
-          onToken: (token) => setMsgs((prev) => {
+          onMeta: (meta) => { if (attempt.valid()) convId.current = meta.conversation_id; },
+          onToken: (token) => { if (attempt.valid()) setMsgs((prev) => {
             return prev.map((m) => m.role === "assistant" && m.request_id === operation.request_id
               ? { ...m, content: m.content + token } : m);
-          }),
-          onDone: acceptResult,
-        }, operation.request_id);
+          }); },
+          onDone: (result) => { if (attempt.valid()) acceptResult(result); },
+        }, operation.request_id, attempt.signal);
       }
     } catch (error) {
-      antMsg.error(error instanceof ChatRequestError ? error.message : "处理结果尚未确认，请查询进度");
-      if (error instanceof ChatRequestError && error.rejected) setPending(null);
-      const rejected = error instanceof ChatRequestError && (error.rejected || error.conflict);
+      if (!attempt.valid()) return;
+      const failure = error instanceof ChatRequestError ? error
+        : (error as any)?.response?.status ? requestError((error as any).response.status, (error as any).response.data?.detail)
+        : new ChatRequestError("处理结果尚未确认，请查询进度");
+      antMsg.error(failure.message);
+      if (failure.rejected) setPending(null);
+      const rejected = failure.rejected || failure.conflict;
       setMsgs((prev) => messagesAfterFailure(prev, operation.request_id, attemptId, rejected));
-    } finally { setSending(false); }
+    } finally { if (attempt.valid()) { active.current = null; setSending(false); } }
   };
   const send = async () => {
     const text = input.trim();
-    if (!text || sending || (pending && !needsOriginal)) return;
+    if (!text || active.current || sending || (pending && !needsOriginal)) return;
     const attemptId = crypto.randomUUID();
     const requestId = pending?.request_id || crypto.randomUUID();
     setInput("");
@@ -89,10 +114,12 @@ export default function Chat() {
                     payload: { message: text, conversation_id: pending ? pending.payload?.conversation_id ?? null : convId.current } }, attemptId);
   };
   const check = async () => {
-    if (!pending || sending) return;
-    setSending(true);
+    if (!pending || active.current || sending) return;
+    const attempt = begin();
+    setPending({ ...pending, can_retry: false });
     try {
-      const result = await queryOperation(pending.kind, pending.request_id);
+      const result = await queryOperation(pending.kind, pending.request_id, attempt.signal);
+      if (!attempt.valid()) return;
       if (result.operation_status === "succeeded") acceptResult(result);
       else {
         setPending({ ...pending, payload: result.retry_payload || pending.payload,
@@ -100,9 +127,10 @@ export default function Chat() {
         antMsg.info(result.can_retry ? "本次处理未完成，可以重试原请求" : "请求正在处理中");
       }
     } catch (error) {
+      if (!attempt.valid()) return;
       if (error instanceof ChatRequestError && error.missing) setPending({ ...pending, can_retry: true });
       antMsg.error(error instanceof ChatRequestError ? error.message : "暂时无法查询处理结果");
-    } finally { setSending(false); }
+    } finally { if (attempt.valid()) { active.current = null; setSending(false); } }
   };
   const feedback = async (type: string, messageId?: string) => {
     if (!convId.current || pending || sending) return;
@@ -148,6 +176,7 @@ export default function Chat() {
       </div>
       {pending && <Space style={{ marginBottom: 12 }}>
         <Typography.Text type="secondary">有待确认的请求</Typography.Text>
+        {sending && <Button onClick={stop}>停止等待</Button>}
         <Button onClick={check} loading={sending}>查询进度</Button>
         <Popconfirm title="放弃等待并开启新对话？"
           description="旧请求仍可能完成，此操作不会取消服务端处理。"

@@ -7,6 +7,7 @@
 """
 
 import json
+import asyncio
 
 import numpy as np
 
@@ -46,7 +47,7 @@ async def get(tenant_id: str, query: str) -> tuple[dict | None, list[float]]:
     """返回 (命中结果或 None, query 向量)。向量回传以便 put 复用，避免重复 embedding。"""
     qv = await client.embed_query(query)
     r = get_redis()
-    raw = await r.lrange(_key(tenant_id), 0, -1)
+    raw = await asyncio.wait_for(r.lrange(_key(tenant_id), 0, -1), settings.cache_timeout_seconds)
     if not raw:
         return None, qv
     qa = np.array(qv)
@@ -70,7 +71,8 @@ async def get(tenant_id: str, query: str) -> tuple[dict | None, list[float]]:
     return None, qv
 
 
-async def put(tenant_id: str, query: str, result: dict, embedding: list[float]) -> None:
+async def put(tenant_id: str, query: str, result: dict, embedding: list[float],
+              *, operation_id: str | None = None) -> None:
     r = get_redis()
     entry = json.dumps(
         desensitize.desensitize_obj({
@@ -83,6 +85,14 @@ async def put(tenant_id: str, query: str, result: dict, embedding: list[float]) 
         }),
         ensure_ascii=False,
     )
+    if operation_id is not None:
+        await r.eval("""
+            if redis.call('SETNX', KEYS[2], '1') == 0 then return 0 end
+            redis.call('LPUSH', KEYS[1], ARGV[1])
+            redis.call('LTRIM', KEYS[1], 0, ARGV[2])
+            return 1
+        """, 2, _key(tenant_id), f"semcache:effect:{operation_id}", entry, MAX_ENTRIES - 1)
+        return
     await r.lpush(_key(tenant_id), entry)
     # 按租户保留最新 MAX_ENTRIES 条，近似 LRU 防止缓存无限膨胀
     await r.ltrim(_key(tenant_id), 0, MAX_ENTRIES - 1)

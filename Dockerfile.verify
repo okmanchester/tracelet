@@ -10,8 +10,10 @@ RUN apt-get update \
 
 WORKDIR /workspace/backend
 COPY backend/pyproject.toml ./
+RUN python -c "import tomllib; p=tomllib.load(open('pyproject.toml','rb'))['project']; open('/tmp/verify-requirements.txt','w').write('\n'.join(p['dependencies']+p['optional-dependencies']['dev']))" \
+    && python -m pip install --no-cache-dir -r /tmp/verify-requirements.txt
 COPY backend/app ./app
-RUN python -m pip install --no-cache-dir ".[dev]"
+RUN python -m pip install --no-cache-dir --no-deps .
 
 COPY backend/scripts ./scripts
 COPY backend/eval ./eval

@@ -5,7 +5,7 @@
 流程：Query 改写 → 混合检索 → Rerank → 上下文压缩 → 带引用生成 → 无命中兜底。
 """
 
-from dataclasses import dataclass, field
+from app.agents.outcomes import AgentOutcome
 
 from app.agents.util import normalize_card, parse_json, render_card
 from app.config import settings
@@ -19,15 +19,7 @@ NO_HIT_MESSAGE = (
 )
 
 
-@dataclass
-class RagResult:
-    answer: str
-    hit: bool
-    citations: list[dict] = field(default_factory=list)
-    candidates: int = 0
-    top_score: float = 0.0
-    tokens: int = 0
-    card: dict | None = None
+RagResult = AgentOutcome
 
 
 async def _rewrite_query(query: str, history: list[dict] | None) -> str:

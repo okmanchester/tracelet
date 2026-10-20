@@ -2,7 +2,7 @@
 
 import re
 
-from sqlalchemy import Boolean, MetaData, Table
+from sqlalchemy import Boolean, Integer, MetaData, Table
 from sqlalchemy.dialects import mysql
 
 VERSION_TABLE = "alembic_version"
@@ -26,6 +26,9 @@ def _default_signature(column):
     if column.server_default is None:
         return None
     value = str(column.server_default.arg).strip()
+    # MySQL 反射把整数默认值 0 表示为 '0'；仅归一化整数列，不能放宽文本默认值。
+    if isinstance(column.type, (Integer, Boolean)) and re.fullmatch(r"'-?\d+'", value):
+        value = value[1:-1]
     return None if value.upper() == "NULL" else value
 
 

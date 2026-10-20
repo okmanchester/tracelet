@@ -15,15 +15,16 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    func,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import DATETIME as MySQLDATETIME
 
-# 微秒精度时间戳：避免同一秒内多条消息排序不稳定
-DateTime6 = MySQLDATETIME(fsp=6)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
+
+# 微秒精度时间戳：避免同一秒内多条消息排序不稳定
+DateTime6 = MySQLDATETIME(fsp=6)
 
 
 def _now() -> datetime:
@@ -157,18 +158,64 @@ class Conversation(Base):
     resolved_by_ai: Mapped[bool] = mapped_column(default=False)
     transferred_to_human: Mapped[bool] = mapped_column(default=False)
     satisfaction: Mapped[str | None] = mapped_column(String(16))  # resolved/unresolved/null
+    context_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    control_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    active_operation_id: Mapped[str | None] = mapped_column(String(64))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime6)
+    handoff_ticket_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 
 class Message(Base):
     __tablename__ = "message"
+    __table_args__ = (UniqueConstraint("conversation_id", "sequence", name="uq_message_sequence"),)
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     conversation_id: Mapped[str] = mapped_column(String(64), ForeignKey("conversation.id"), index=True)
     role: Mapped[str] = mapped_column(String(16))  # user / assistant / system
     content: Mapped[str] = mapped_column(Text)
     meta: Mapped[dict] = mapped_column(JSON, default=dict)  # 诊断卡片/引用/trace_id 等
+    sequence: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime6, default=_now)
+
+
+class Operation(Base):
+    __tablename__ = "operation"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), index=True)
+    user_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(24))
+    request_id: Mapped[str] = mapped_column(String(36))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    request_payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    conversation_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    user_message_id: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="processing")
+    result: Mapped[dict] = mapped_column(JSON, default=dict)
+    draft: Mapped[dict] = mapped_column(JSON, default=dict)
+    owner_token: Mapped[str] = mapped_column(String(32), default="")
+    generation: Mapped[int] = mapped_column(Integer, default=0)
+    control_version: Mapped[int] = mapped_column(Integer, default=0)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime6)
+    created_at: Mapped[datetime] = mapped_column(DateTime6, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime6, default=_now, onupdate=_now)
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id", "kind", "request_id",
+                                     name="uq_operation_identity"),)
+
+
+class EffectTask(Base):
+    __tablename__ = "effect_task"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(24))
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    owner_token: Mapped[str] = mapped_column(String(32), default="")
+    available_at: Mapped[datetime] = mapped_column(DateTime6, default=_now)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime6)
+    error: Mapped[str | None] = mapped_column(String(64))
+    __table_args__ = (UniqueConstraint("operation_id", "kind", name="uq_effect_task"),)
 
 
 # ============ 可观测：Agent 链路 / 工具调用 ============
@@ -209,6 +256,7 @@ class ToolCallLog(Base):
 class Ticket(Base):
     __tablename__ = "ticket"
     ticket_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation_id: Mapped[str | None] = mapped_column(String(64), unique=True)
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
     user_id: Mapped[str] = mapped_column(String(64), index=True)
     category: Mapped[str] = mapped_column(String(32))

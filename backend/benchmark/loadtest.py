@@ -47,7 +47,8 @@ async def _run_batch(label: str) -> tuple[list[float], list[str]]:
         async with sem:
             t0 = time.perf_counter()
             r = await supervisor.run(query=q, tenant_id=tenant, user_id=user,
-                                     conversation_id=f"bench_{label}_{idx}", role="customer_dev")
+                                     conversation_id=f"bench_{label}_{idx}", role="customer_dev",
+                                     context={"history": [], "entities": {}})
             dt = time.perf_counter() - t0
             latencies.append(dt)
             trace_ids.append(r["trace_id"])

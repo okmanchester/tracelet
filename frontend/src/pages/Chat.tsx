@@ -1,15 +1,12 @@
-/**
- * @author: 公众号：IT杨秀才
- * @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
- */
 import { useRef, useState } from "react";
-import { Card, Input, Button, Tag, Space, Typography, Avatar, message as antMsg } from "antd";
+import { Card, Input, Button, Tag, Space, Typography, Avatar, Popconfirm, message as antMsg } from "antd";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { chatStream, submitFeedback } from "../api";
-import { ChatRequestError } from "../chatStream";
+import { chatStream, currentUser, submitFeedback } from "../api";
+import { ChatRequestError, queryOperation } from "../chatStream";
 import DiagnosisCard from "../components/DiagnosisCard";
 import Highlight from "../components/Highlight";
+import { PendingOperation as Pending, messagesAfterFailure, persistPending, restorePending } from "../pendingOperation";
 
 interface Msg {
   role: "user" | "assistant";
@@ -21,151 +18,150 @@ interface Msg {
   from_cache?: boolean;
   message_id?: string;
   streaming?: boolean;
+  request_id?: string;
+  attempt_id?: string;
 }
 
 export default function Chat() {
+  const user = currentUser();
+  const storageKey = `tracelet:pending:${user?.tenant_id}:${user?.user_id}`;
+  const [pending, setPendingState] = useState<Pending | null>(() => restorePending(sessionStorage, storageKey));
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const convId = useRef<string | null>(null);
-
+  const setPending = (value: Pending | null) => {
+    setPendingState(value);
+    persistPending(sessionStorage, storageKey, value);
+  };
+  const acceptResult = (data: any) => {
+    convId.current = data.conversation_id || convId.current;
+    const result: Msg = {
+      role: "assistant", content: data.answer || "反馈已记录。", card: data.card,
+      citations: data.citations, ticket_id: data.ticket_id, need_human: data.need_human,
+      from_cache: data.from_cache, message_id: data.message_id, streaming: false,
+      request_id: data.request_id,
+    };
+    setMsgs((prev) => {
+      const index = prev.findIndex((m) => m.role === "assistant" && m.request_id === data.request_id);
+      return index < 0 ? [...prev, result] : prev.map((m, i) => i === index ? result : m);
+    });
+    setPending(null);
+  };
+  const execute = async (operation: Pending, attemptId?: string) => {
+    setSending(true);
+    setPending(operation);
+    if (operation.kind === "chat") setMsgs((prev) => {
+      const placeholder: Msg = { role: "assistant", content: "", streaming: true, request_id: operation.request_id };
+      const index = prev.findIndex((m) => m.role === "assistant" && m.request_id === operation.request_id);
+      return index < 0 ? [...prev, placeholder] : prev.map((m, i) => i === index ? placeholder : m);
+    });
+    try {
+      if (operation.kind === "feedback") {
+        const result = await submitFeedback({ ...operation.payload, request_id: operation.request_id });
+        if (result.operation_status !== "succeeded") throw new ChatRequestError("反馈正在处理中，请查询进度");
+        acceptResult(result);
+      } else {
+        await chatStream(operation.payload.message, operation.payload.conversation_id, {
+          onMeta: (meta) => { convId.current = meta.conversation_id; },
+          onToken: (token) => setMsgs((prev) => {
+            return prev.map((m) => m.role === "assistant" && m.request_id === operation.request_id
+              ? { ...m, content: m.content + token } : m);
+          }),
+          onDone: acceptResult,
+        }, operation.request_id);
+      }
+    } catch (error) {
+      antMsg.error(error instanceof ChatRequestError ? error.message : "处理结果尚未确认，请查询进度");
+      if (error instanceof ChatRequestError && error.rejected) setPending(null);
+      const rejected = error instanceof ChatRequestError && (error.rejected || error.conflict);
+      setMsgs((prev) => messagesAfterFailure(prev, operation.request_id, attemptId, rejected));
+    } finally { setSending(false); }
+  };
   const send = async () => {
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || sending || (pending && !needsOriginal)) return;
+    const attemptId = crypto.randomUUID();
+    const requestId = pending?.request_id || crypto.randomUUID();
     setInput("");
+    setMsgs((prev) => [...prev, { role: "user", content: text, attempt_id: attemptId, request_id: requestId }]);
+    await execute({ kind: "chat", request_id: requestId,
+                    payload: { message: text, conversation_id: pending ? pending.payload?.conversation_id ?? null : convId.current } }, attemptId);
+  };
+  const check = async () => {
+    if (!pending || sending) return;
     setSending(true);
-    // 先插入用户消息和一条占位的流式助手消息，后续 SSE 回调持续更新最后这条
-    setMsgs((m) => [...m, { role: "user", content: text }, { role: "assistant", content: "", streaming: true }]);
     try {
-      await chatStream(text, convId.current, {
-        // meta：拿到会话/消息 id（首轮会创建新会话）
-        onMeta: (m) => {
-          convId.current = m.conversation_id;
-          setMsgs((prev) => {
-            const c = prev.slice();
-            c[c.length - 1] = { ...c[c.length - 1], message_id: m.message_id };
-            return c;
-          });
-        },
-        // token：逐段追加到正文，形成打字机效果
-        onToken: (t) =>
-          setMsgs((prev) => {
-            const c = prev.slice();
-            const last = c[c.length - 1];
-            c[c.length - 1] = { ...last, content: last.content + t };
-            return c;
-          }),
-        // done：用完整结构化结果（卡片/引用/工单等）覆盖占位消息
-        onDone: (d) =>
-          setMsgs((prev) => {
-            const c = prev.slice();
-            c[c.length - 1] = {
-              ...c[c.length - 1],
-              streaming: false,
-              content: d.answer ?? c[c.length - 1].content,
-              card: d.card,
-              citations: d.citations,
-              ticket_id: d.ticket_id,
-              need_human: d.need_human,
-              from_cache: d.from_cache,
-            };
-            return c;
-          }),
-      });
+      const result = await queryOperation(pending.kind, pending.request_id);
+      if (result.operation_status === "succeeded") acceptResult(result);
+      else {
+        setPending({ ...pending, payload: result.retry_payload || pending.payload,
+                     can_retry: !!result.can_retry });
+        antMsg.info(result.can_retry ? "本次处理未完成，可以重试原请求" : "请求正在处理中");
+      }
     } catch (error) {
-      antMsg.error(error instanceof ChatRequestError ? error.message : "对话失败，请稍后重试");
-      setMsgs((prev) => prev.filter((_, i) => i !== prev.length - 1));
-    } finally {
-      setSending(false);
-    }
+      if (error instanceof ChatRequestError && error.missing) setPending({ ...pending, can_retry: true });
+      antMsg.error(error instanceof ChatRequestError ? error.message : "暂时无法查询处理结果");
+    } finally { setSending(false); }
   };
-
-  const feedback = async (type: string) => {
-    if (!convId.current) {
-      antMsg.info("请先开始对话");
-      return;
-    }
-    const r = await submitFeedback({ conversation_id: convId.current, type });
-    if (type === "need_human" && r.ticket_id) {
-      antMsg.success(`已转人工，工单 ${r.ticket_id}`);
-      setMsgs((m) => [
-        ...m,
-        { role: "assistant", content: `已为你转接人工技术支持，工单号 ${r.ticket_id}，技术支持会尽快跟进。`, ticket_id: r.ticket_id },
-      ]);
-    } else {
-      antMsg.success(type === "resolved" ? "已标记为已解决" : "已记录");
-    }
+  const feedback = async (type: string, messageId?: string) => {
+    if (!convId.current || pending || sending) return;
+    await execute({ kind: "feedback", request_id: crypto.randomUUID(),
+      payload: { conversation_id: convId.current, message_id: messageId || null, type } });
   };
+  const needsOriginal = !!(pending?.kind === "chat" && pending.can_retry && !pending.payload?.message);
 
   return (
     <div style={{ maxWidth: 860, margin: "0 auto" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
         <Typography.Text strong>智能技术支持</Typography.Text>
-        <Button size="small" onClick={() => feedback("need_human")}>🙋 转人工</Button>
+        <Button size="small" disabled={!!pending || sending} onClick={() => feedback("need_human")}>转人工</Button>
       </div>
       <div style={{ minHeight: "60vh", marginBottom: 16 }}>
-        {msgs.length === 0 && (
-          <Typography.Paragraph type="secondary">
-            试试：「实名认证接口返回401，request_id是 req_20260615_8842」「签名算法怎么生成」「这个月费用为什么变高」
-          </Typography.Paragraph>
-        )}
-        {msgs.map((m, i) => {
-          const isUser = m.role === "user";
-          return (
-          <div
-            key={i}
-            style={{ display: "flex", flexDirection: isUser ? "row-reverse" : "row", gap: 10, margin: "14px 0", alignItems: "flex-start" }}
-          >
-            <Avatar style={{ background: isUser ? "#1677ff" : "#52c41a", flexShrink: 0 }}>
-              {isUser ? "🧑" : "🤖"}
+        {!msgs.length && <Typography.Paragraph type="secondary">
+          描述接口报错、接入或账单问题，AI 将基于可用证据协助处理。
+        </Typography.Paragraph>}
+        {msgs.map((m, i) => (
+          <div key={i} style={{ display: "flex", flexDirection: m.role === "user" ? "row-reverse" : "row",
+                               gap: 10, margin: "14px 0", alignItems: "flex-start" }}>
+            <Avatar style={{ background: m.role === "user" ? "#1677ff" : "#52c41a" }}>
+              {m.role === "user" ? "我" : "AI"}
             </Avatar>
-            <Card size="small" style={{ maxWidth: "78%", background: isUser ? "#e6f4ff" : "#fff" }}>
-              {isUser ? (
-                <span style={{ whiteSpace: "pre-wrap" }}><Highlight text={m.content} /></span>
-              ) : m.card ? (
-                <DiagnosisCard card={m.card} />
-              ) : m.content ? (
-                <div className="md">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                </div>
-              ) : (
-                m.streaming ? "思考中…" : ""
-              )}
-              {m.role === "assistant" && !m.streaming && (
-                <div style={{ marginTop: 8 }}>
-                  <Tag color="green">🤖 AI 助手</Tag>
-                  {m.from_cache && <Tag color="gold">缓存命中</Tag>}
-                  {m.need_human && <Tag color="volcano">已转人工</Tag>}
-                  {m.ticket_id && <Tag color="blue">工单 {m.ticket_id}</Tag>}
-                  {m.citations && m.citations.length > 0 && (
-                    <div style={{ marginTop: 6 }}>
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>引用来源：</Typography.Text>
-                      {m.citations.map((c: any, j: number) => (
-                        <Tag key={j}>[{c.index}] 《{c.doc_title}》-{c.section}</Tag>
-                      ))}
-                    </div>
-                  )}
-                  <Space style={{ marginTop: 8 }}>
-                    <Button size="small" onClick={() => feedback("resolved")}>✅ 已解决</Button>
-                    <Button size="small" onClick={() => feedback("unresolved")}>❌ 没解决</Button>
-                    <Button size="small" onClick={() => feedback("need_human")}>🙋 需要人工</Button>
-                  </Space>
-                </div>
-              )}
+            <Card size="small" style={{ maxWidth: "78%" }}>
+              {m.role === "user" ? <Highlight text={m.content} />
+                : m.card ? <DiagnosisCard card={m.card} />
+                : <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content || (m.streaming ? "思考中…" : "结果待确认")}</ReactMarkdown>}
+              {m.role === "assistant" && !m.streaming && <>
+                {m.from_cache && <Tag color="gold">缓存命中</Tag>}
+                {m.need_human && <Tag color="volcano">已转人工</Tag>}
+                {m.ticket_id && <Tag color="blue">工单 {m.ticket_id}</Tag>}
+                {m.citations?.map((c: any, j: number) => <Tag key={j}>[{c.index}] {c.doc_title} · {c.section}</Tag>)}
+                {m.message_id && <Space style={{ marginTop: 8 }}>
+                  <Button size="small" disabled={!!pending || sending} onClick={() => feedback("resolved", m.message_id)}>已解决</Button>
+                  <Button size="small" disabled={!!pending || sending} onClick={() => feedback("unresolved", m.message_id)}>没解决</Button>
+                  <Button size="small" disabled={!!pending || sending} onClick={() => feedback("need_human", m.message_id)}>需要人工</Button>
+                </Space>}
+              </>}
             </Card>
           </div>
-          );
-        })}
+        ))}
       </div>
+      {pending && <Space style={{ marginBottom: 12 }}>
+        <Typography.Text type="secondary">有待确认的请求</Typography.Text>
+        <Button onClick={check} loading={sending}>查询进度</Button>
+        <Popconfirm title="放弃等待并开启新对话？"
+          description="旧请求仍可能完成，此操作不会取消服务端处理。"
+          onConfirm={() => { setPending(null); convId.current = null; setMsgs([]); setInput(""); }}>
+          <Button disabled={sending}>开启新对话</Button>
+        </Popconfirm>
+        {pending.can_retry && pending.payload && !needsOriginal && <Button disabled={sending} onClick={() => execute(pending)}>重试原请求</Button>}
+        {needsOriginal && <Typography.Text type="secondary">请重新输入原问题以重试</Typography.Text>}
+      </Space>}
       <Space.Compact style={{ width: "100%" }}>
-        <Input.TextArea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          autoSize={{ minRows: 1, maxRows: 4 }}
-          onPressEnter={(e) => { e.preventDefault(); send(); }}
-          placeholder="描述你的问题…"
-        />
-        <Button type="primary" onClick={send} loading={sending}>发送</Button>
+        <Input.TextArea value={input} onChange={(e) => setInput(e.target.value)}
+          disabled={!!pending && !needsOriginal} autoSize={{ minRows: 1, maxRows: 4 }}
+          onPressEnter={(e) => { e.preventDefault(); send(); }} placeholder="描述你的问题…" />
+        <Button type="primary" onClick={send} loading={sending} disabled={!!pending && !needsOriginal}>{needsOriginal ? "重试原请求" : "发送"}</Button>
       </Space.Compact>
     </div>
   );

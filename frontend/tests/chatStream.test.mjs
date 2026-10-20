@@ -65,7 +65,10 @@ test("正常 UTF-8 分块流保持 meta/token/done 与请求结构", async (t) =
   const [url, init] = fetch.mock.calls[0].arguments;
   assert.equal(url, "/api/chat");
   assert.equal(init.headers.Authorization, "Bearer fake-token");
-  assert.deepEqual(JSON.parse(init.body), { message: "probe", conversation_id: "conv_probe" });
+  const sent = JSON.parse(init.body);
+  assert.match(sent.request_id, /^[0-9a-f-]{36}$/);
+  assert.deepEqual({ message: sent.message, conversation_id: sent.conversation_id },
+                   { message: "probe", conversation_id: "conv_probe" });
 });
 
 test("网络读取失败向上传递且释放 reader", async (t) => {
@@ -74,3 +77,28 @@ test("网络读取失败向上传递且释放 reader", async (t) => {
   await assert.rejects(chatStream("probe", null, {}), /disconnected/);
   assert.equal(body.locked, false);
 });
+
+test("HTTP 202 保留处理中状态，不作为成功流", async (t) => {
+  browser(t, new Response(JSON.stringify({ operation_status: "processing" }), { status: 202 }));
+  await assert.rejects(chatStream("probe", null, {}), /正在处理中/);
+});
+
+test("缺少 done 的中断不能报告成功", async (t) => {
+  browser(t, new Response('event: token\ndata: partial\n\n'));
+  await assert.rejects(chatStream("probe", null, {}), /连接已中断/);
+});
+
+test("原请求重试沿用传入标识", async (t) => {
+  browser(t, new Response('event: done\ndata: {"answer":"ready"}\n\n'));
+  const id = "00000000-0000-4000-8000-000000000001";
+  await chatStream("probe", null, {}, id);
+  assert.equal(JSON.parse(fetch.mock.calls[0].arguments[1].body).request_id, id);
+});
+
+for (const [code, rejected] of [["conversation_busy", true], ["request_conflict", false]]) {
+  test(`409 ${code} 明确是否接受过原请求`, async (t) => {
+    browser(t, new Response(JSON.stringify({ detail: { code } }), { status: 409 }));
+    await assert.rejects(chatStream("probe", null, {}),
+      (error) => error.rejected === rejected && error.conflict === (code === "request_conflict"));
+  });
+}

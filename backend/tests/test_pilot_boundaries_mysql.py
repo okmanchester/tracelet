@@ -3,6 +3,7 @@
 import json
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -18,6 +19,13 @@ from app.tools.registry import ToolContext
 from fastapi import FastAPI, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
+
+class BoundaryClient(httpx.AsyncClient):
+    async def post(self, url, *, json=None, **kwargs):
+        if url in {"/api/chat", "/api/feedback"}:
+            json = {"request_id": str(uuid4()), **(json or {})}
+        return await super().post(url, json=json, **kwargs)
 
 
 @pytest.fixture
@@ -69,6 +77,12 @@ def pilot_store(mysql_engine, monkeypatch):
             async def commit(self):
                 session.commit()
 
+            async def rollback(self):
+                session.rollback()
+
+            async def flush(self):
+                session.flush()
+
         db = AsyncDB()
 
         @asynccontextmanager
@@ -82,6 +96,12 @@ def pilot_store(mysql_engine, monkeypatch):
         app.dependency_overrides[get_db] = lambda: db
         app.dependency_overrides[get_current_user] = lambda: actor["user"]
         monkeypatch.setattr(ticket_tools, "AsyncSessionLocal", session_factory)
+        from app import turns
+        from app.memory import context as memory_context
+        monkeypatch.setattr(chat, "AsyncSessionLocal", session_factory)
+        monkeypatch.setattr(turns, "AsyncSessionLocal", session_factory)
+        monkeypatch.setattr(memory_context, "get_redis", lambda: type("NoCache", (), {
+            "get": AsyncMock(return_value=None)})())
 
         def counts():
             return tuple(session.scalar(select(func.count()).select_from(model))
@@ -102,7 +122,7 @@ async def test_conversation_http_read_write_matrix(pilot_store, monkeypatch):
     app, session, users, actor, counts, _ = pilot_store
     run = AsyncMock(return_value={"answer": "ready", "intent": "chitchat"})
     monkeypatch.setattr(chat.supervisor, "run", run)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with BoundaryClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for uid, user in users.items():
             actor["user"] = user
             listed = (await client.get("/api/conversations")).json()["conversations"]
@@ -148,7 +168,7 @@ async def test_conversation_http_read_write_matrix(pilot_store, monkeypatch):
 async def test_ticket_http_and_tool_matrix_handles_legacy_ownership(pilot_store):
     app, session, users, actor, _, _ = pilot_store
     all_tickets = {row.ticket_id: row for row in session.scalars(select(models.Ticket))}
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with BoundaryClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for uid, user in users.items():
             actor["user"] = user
             if uid in {"support", "admin"}:
@@ -179,7 +199,7 @@ async def test_ticket_http_and_tool_matrix_handles_legacy_ownership(pilot_store)
 
 async def test_tool_creation_uses_trusted_identity_and_rejects_spoofing(pilot_store):
     _, session, _, _, counts, _ = pilot_store
-    ctx = ToolContext("a", user_id="u_a1", role="customer_dev")
+    ctx = ToolContext("a", user_id="u_a1", role="customer_dev", operation_id=str(uuid4()))
     for args in (
         {"user_id": "u_a2"}, {"tenant_id": "b"}, {"conversation_id": "c_u_a2"},
         {"conversation_id": "c_u_b1"}, {"conversation_id": "c_missing"},
@@ -201,7 +221,7 @@ async def test_workbench_denies_customers_before_model_or_writes(pilot_store, mo
     app, _, users, actor, counts, _ = pilot_store
     model = AsyncMock(side_effect=AssertionError("客户不可调用人工推荐模型"))
     monkeypatch.setattr(workbench.client, "chat", model)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with BoundaryClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         for uid in ("u_a1", "u_aa", "u_b1", "u_ba"):
             actor["user"] = users[uid]
             before = counts()
@@ -231,7 +251,7 @@ async def test_sensitive_markers_do_not_enter_messages_tickets_traces_or_audit(p
     monkeypatch.setattr(chat.supervisor, "run", run)
     monkeypatch.setattr(tool_registry, "AsyncSessionLocal", session_factory)
     monkeypatch.setattr(trace_module, "AsyncSessionLocal", session_factory)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with BoundaryClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/api/chat", json={"conversation_id": "c_u_a1", "message": text})
         assert response.status_code == 200
         clean(response.text)
@@ -279,7 +299,7 @@ async def test_input_sanitizer_failure_creates_no_conversation_or_message(pilot_
     run = AsyncMock(side_effect=AssertionError("不得外发"))
     monkeypatch.setattr(chat.supervisor, "run", run)
     before = counts()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+    async with BoundaryClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         with pytest.raises(desensitize.SensitiveDataError):
             await client.post("/api/chat", json={"message": "probe"})
     assert counts() == before

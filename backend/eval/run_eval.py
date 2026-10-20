@@ -43,6 +43,7 @@ async def evaluate() -> dict:
             query=c["query"], tenant_id=c["tenant_id"], user_id=c["user_id"],
             conversation_id=f"eval_{c['id']}_{i}", is_internal=False,
             role="customer_dev",
+            context={"history": [], "entities": {}},
         )
         # 意图
         intent_correct = res.get("intent") == c["expected_intent"]
@@ -58,7 +59,8 @@ async def evaluate() -> dict:
             if res.get("citations"):
                 cite_ok += 1
         # 转人工
-        human_correct = bool(res.get("need_human")) == bool(c.get("expect_human"))
+        # 离线仅评估接管决策，不提交真实工单或会话模式。
+        human_correct = bool(res.get("handoff_requested")) == bool(c.get("expect_human"))
         human_ok += human_correct
         # 澄清
         clarify_correct = bool(res.get("need_clarify")) == bool(c.get("expect_clarify", False))
@@ -68,7 +70,7 @@ async def evaluate() -> dict:
             badcases.append({
                 "id": c["id"], "query": c["query"],
                 "expected_intent": c["expected_intent"], "got_intent": res.get("intent"),
-                "expect_human": bool(c.get("expect_human")), "got_human": bool(res.get("need_human")),
+                "expect_human": bool(c.get("expect_human")), "got_human": bool(res.get("handoff_requested")),
                 "attribution": "意图识别" if not intent_correct else "转人工判定",
             })
 

@@ -2,7 +2,6 @@
 # @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
 """技术支持工作台接口（内部角色）。"""
 
-import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -15,6 +14,8 @@ from app.guardrail import desensitize
 from app.llm import client
 from app.llm.router import model_for
 from app.models import AuditLog, Conversation, Message, Ticket
+from app import effects
+from app.conversation_service import append_message, locked_conversation, revoke_ai
 from app.schemas.chat import TicketUpdateRequest
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench"])
@@ -150,17 +151,13 @@ async def human_reply(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """人工回复客户：写入会话（客户可在会话历史看到），并脱敏。"""
-    conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id))).scalar_one_or_none()
+    conv = await locked_conversation(db, conv_id)
     if conv is None:
         raise HTTPException(404, "会话不存在")
-    msg = Message(
-        id="msg_" + uuid.uuid4().hex[:12], conversation_id=conv_id, role="assistant",
-        content=desensitize.desensitize_text(content),
-        meta=desensitize.desensitize_obj(
-            {"by": "human", "agent_id": user.user_id, "agent_name": user.display_name}),
-    )
-    db.add(msg)
-    conv.transferred_to_human = True
+    msg = append_message(db, conv, "assistant", content,
+                         {"by": "human", "agent_id": user.user_id, "agent_name": user.display_name})
+    revoke_ai(conv)
+    effects.enqueue(db, msg.id, conv.id, conv.tenant_id)
     db.add(AuditLog(tenant_id=conv.tenant_id, user_id=user.user_id, action="human_reply",
                     detail=f"conversation={conv_id}"))
     await db.commit()
@@ -171,10 +168,10 @@ async def human_reply(
 async def takeover_conversation(
     conv_id: str, user: CurrentUser = Depends(require_internal), db: AsyncSession = Depends(get_db)
 ) -> dict:
-    conv = (await db.execute(select(Conversation).where(Conversation.id == conv_id))).scalar_one_or_none()
+    conv = await locked_conversation(db, conv_id)
     if conv is None:
         raise HTTPException(404, "会话不存在")
-    conv.transferred_to_human = True
+    revoke_ai(conv)
     db.add(AuditLog(tenant_id=conv.tenant_id, user_id=user.user_id, action="takeover",
                     detail=f"conversation={conv_id}"))
     await db.commit()

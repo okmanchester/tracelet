@@ -1,8 +1,4 @@
-"""Supervisor：用 LangGraph 编排多 Agent，串行保证安全审查在最终回复前。
-
-管线：load_context → intent → [clarify?] → specialists(并行) → ticket → summarize → security
-每个节点记录 AgentTrace；任一专业 Agent 异常被隔离降级，不影响整体。
-"""
+"""Supervisor 只生成经过安全出口的结果及待执行意图；持久化由请求提交层负责。"""
 
 import asyncio
 
@@ -10,15 +6,14 @@ from langgraph.graph import END, START, StateGraph
 
 from app.access import require_identity
 from app.agents import api_diagnostic, billing, doc_rag, intent_router, security, ticket
+from app.agents.outcomes import AgentOutcome, decide
 from app.agents.state import AgentState
-from app.agents.util import render_card
 from app.cache import route_cache, semantic_cache
 from app.config import settings
-from app.guardrail import desensitize, fallback
+from app.guardrail import desensitize
 from app.llm import client
 from app.llm.router import model_for
 from app.memory import session
-from app.observability import cost
 from app.observability.trace import TraceCollector, timer
 from app.tools.registry import ToolContext, load_tools
 
@@ -31,322 +26,191 @@ def _finalize_result(result: dict) -> dict:
     return result
 
 
-async def _general_reply(query: str) -> tuple[str, int]:
-    r = await client.chat(
-        [
-            {"role": "system", "content": "你是 API 平台技术支持助手。对与业务无关的闲聊，礼貌简短回应，并引导用户提出 API 接入/报错/账单等技术支持问题。"},
-            {"role": "user", "content": query},
-        ],
-        model=model_for("chitchat"),
-        temperature=0.5,
-    )
-    return r.content.strip(), r.total_tokens
+async def _general_reply(query):
+    result = await client.chat([
+        {"role": "system", "content": "你是 API 平台技术支持助手。简短回答闲聊，并引导到技术支持问题。不得声称已经建单或转人工。"},
+        {"role": "user", "content": query},
+    ], model=model_for("chitchat"), temperature=0.5)
+    return AgentOutcome(answer=result.content.strip(), tokens=result.total_tokens)
 
 
 def build_graph(ctx: ToolContext, trace: TraceCollector):
-    """按请求构建图（闭包捕获 ctx 与 trace）。"""
+    async def load_context(state):
+        if "history" in state:
+            return {}
+        return {"history": await session.get_history(state["conversation_id"]),
+                "collected_entities": await session.get_entities(state["conversation_id"])}
 
-    async def load_context(state: AgentState) -> dict:
-        conv = state["conversation_id"]
-        history = await session.get_history(conv)
-        entities = await session.get_entities(conv)
-        return {"history": history, "collected_entities": entities}
-
-    async def intent_node(state: AgentState) -> dict:
-        history = state.get("history")
-        with timer() as t:
-            cached_route = None if history else await route_cache.get(state["query"])
-            if cached_route:
-                res = {**cached_route, "tokens": 0}
-            else:
-                res = await intent_router.classify(state["query"], history)
-                if not history:
-                    await route_cache.put(state["query"], res)
-        # 合并记忆中的实体（新抽取覆盖/补充）
-        merged = await session.update_entities(state["conversation_id"], res["entities"])
-        trace.step(
-            "intent_router",
-            input_summary=state["query"],
-            output_summary=f"intent={res['intent']} conf={res['confidence']} entities={merged}",
-            duration_ms=t.ms,
-            token_usage=res["tokens"],
-        )
-        # 澄清判定：API 报错/数据质量类缺关键定位信息时追问
-        need_clarify = False
-        clarify_q = ""
-        if res["intent"] == "api_error" and not merged.get("request_id") and not merged.get("error_code"):
-            need_clarify = True
-            clarify_q = "为帮你准确定位，请提供以下任一信息：request_id、出错的接口名，或返回的错误码/HTTP状态码（最多 3 项即可）。"
-        elif res["confidence"] < settings.intent_confidence_threshold and res["intent"] != "chitchat":
-            need_clarify = True
-            clarify_q = "我不太确定你的问题类型，能补充一下具体场景吗？比如是接口报错、账单费用，还是文档用法？"
-        return {
-            "intent": res["intent"],
-            "confidence": res["confidence"],
-            "entities": merged,
-            "route": res["route"],
-            "need_clarify": need_clarify,
-            "clarify_question": clarify_q,
-        }
-
-    def after_intent(state: AgentState) -> str:
-        if state.get("need_clarify"):
-            return "clarify"
-        if state.get("intent") == "doc_qa" and not state.get("history"):
-            return "semantic_cache"
-        return "specialists"
-
-    async def clarify_node(state: AgentState) -> dict:
-        trace.step("clarify", input_summary=state["query"], output_summary=state["clarify_question"])
-        return {"final_answer": state["clarify_question"], "need_human": False}
-
-    async def semantic_cache_node(state: AgentState) -> dict:
-        with timer() as ct:
-            cached, query_emb = await semantic_cache.get(state["tenant_id"], state["query"])
-        if cached:
-            trace.step("semantic_cache", input_summary=state["query"],
-                       output_summary=f"命中 similarity={cached['similarity']}", duration_ms=ct.ms)
-            return {
-                "final_answer": cached["answer"],
-                "rag_citations": cached["citations"],
-                "card": cached.get("card"),
-                "need_human": False,
-                "from_cache": True,
-                "query_embedding": query_emb,
-            }
-        trace.step("semantic_cache", input_summary=state["query"],
-                   output_summary="未命中，继续执行 doc_rag", duration_ms=ct.ms)
-        return {"from_cache": False, "query_embedding": query_emb}
-
-    def after_semantic_cache(state: AgentState) -> str:
-        return "cached" if state.get("from_cache") else "miss"
-
-    async def _run_agent(name: str, coro):
-        with timer() as t:
+    async def intent_node(state):
+        history = state.get("history", [])
+        cached = None
+        if not history:
             try:
-                result = await coro
-                return name, result, t, None
+                cached = await asyncio.wait_for(route_cache.get(state["query"]), settings.cache_timeout_seconds)
             except desensitize.SensitiveDataError:
                 raise
-            except Exception:  # noqa: BLE001  单 Agent 异常隔离
-                return name, None, t, "专业 Agent 执行失败"
+            except Exception:
+                trace.step("route_cache", status="error", error="路由缓存读取失败")
+        with timer() as t:
+            res = {**cached, "tokens": 0} if cached else await intent_router.classify(state["query"], history)
+        merged = dict(state.get("collected_entities", {}))
+        merged.update({key: value for key, value in res.get("entities", {}).items()
+                       if value not in (None, "", [], {})})
+        merged = desensitize.desensitize_obj(merged)
+        trace.step("intent_router", input_summary=state["query"],
+                   output_summary=f"intent={res['intent']}", duration_ms=t.ms,
+                   token_usage=res.get("tokens", 0))
+        clarify = ""
+        if res["intent"] == "api_error" and not merged.get("request_id") and not merged.get("error_code"):
+            clarify = "请提供 request_id、出错接口或错误码，帮助定位问题。"
+        elif res["confidence"] < settings.intent_confidence_threshold and res["intent"] != "chitchat":
+            clarify = "请补充具体场景：接口报错、账单费用，还是文档用法？"
+        return {"intent": res["intent"], "confidence": res["confidence"],
+                "entities": merged, "route": res["route"], "need_clarify": bool(clarify),
+                "clarify_question": clarify,
+                "route_cache_entry": res if not history and not cached else None}
 
-    async def specialists_node(state: AgentState) -> dict:
-        route = state.get("route", [])
-        query, entities = state["query"], state.get("entities", {})
-        outputs: dict = {}
-        citations: list = []
-        need_human = False
-        need_ticket = False
+    def after_intent(state):
+        if state.get("need_clarify"):
+            return "clarify"
+        return "semantic_cache" if state["intent"] == "doc_qa" and not state.get("history") else "specialists"
 
-        if not route:  # chitchat
-            with timer() as t:
-                reply, tok = await _general_reply(query)
-            trace.step("general", input_summary=query, output_summary=reply, duration_ms=t.ms, token_usage=tok)
-            return {"agent_outputs": {"general": reply}, "rag_citations": []}
+    async def clarify_node(state):
+        return {"final_answer": state["clarify_question"], "need_human": False}
 
-        # 并行运行选中的专业 Agent
-        coros = []
+    async def cache_node(state):
+        try:
+            cached, embedding = await semantic_cache.get(state["tenant_id"], state["query"])
+        except desensitize.SensitiveDataError:
+            raise
+        except Exception:
+            trace.step("semantic_cache", status="error", error="答案缓存读取失败")
+            cached, embedding = None, None
+        if cached:
+            return {"final_answer": cached["answer"], "rag_citations": cached.get("citations", []),
+                    "card": cached.get("card"), "need_human": False, "from_cache": True}
+        return {"from_cache": False, "query_embedding": embedding}
+
+    async def run_one(name, coro):
+        with timer() as t:
+            try:
+                outcome = await coro
+                if not isinstance(outcome, AgentOutcome):
+                    raise TypeError("Agent 结果不符合契约")
+            except desensitize.SensitiveDataError:
+                raise
+            except Exception:
+                outcome = AgentOutcome(answer="", status="failed", reason="technical_failure")
+        trace.step(name, input_summary="", output_summary=outcome.answer,
+                   status="error" if outcome.status == "failed" else "ok",
+                   error=outcome.reason if outcome.status == "failed" else None,
+                   duration_ms=t.ms, token_usage=outcome.tokens)
+        return name, outcome
+
+    async def specialists_node(state):
+        route, query, entities = state.get("route", []), state["query"], state.get("entities", {})
+        jobs = []
+        if not route:
+            jobs.append(run_one("general", _general_reply(query)))
         if "api_diagnostic" in route:
-            coros.append(_run_agent("api_diagnostic", api_diagnostic.diagnose(
+            jobs.append(run_one("api_diagnostic", api_diagnostic.diagnose(
                 query, entities, ctx, is_rate_limit=state["intent"] == "rate_limit")))
         if "billing" in route:
-            coros.append(_run_agent("billing", billing.handle(query, entities, ctx)))
-        # doc_rag 仅在没有诊断/账单作为主答时单独使用，避免重复（诊断/账单内部已含文档）
+            jobs.append(run_one("billing", billing.handle(query, entities, ctx)))
         if "doc_rag" in route and not ("api_diagnostic" in route or "billing" in route):
-            coros.append(_run_agent("doc_rag", doc_rag.answer(query, history=state.get("history"))))
+            jobs.append(run_one("doc_rag", doc_rag.answer(query, history=state.get("history"))))
+        outputs = dict(await asyncio.gather(*jobs))
+        if not outputs and state["intent"] != "ticket":
+            outputs["routing"] = AgentOutcome(answer="", status="failed", reason="invalid_route")
+        action = decide(list(outputs.values()), requested_human=state["intent"] == "ticket")
+        return {"agent_outputs": outputs,
+                "rag_citations": [c for outcome in outputs.values() for c in outcome.citations],
+                **action}
 
-        results = await asyncio.gather(*coros)
-        for name, result, t, err in results:
-            if err:
-                trace.step(name, input_summary=query, status="error", duration_ms=t.ms, error=err)
-                continue
-            tok = getattr(result, "tokens", 0)
-            hit = [c.get("doc_title") for c in getattr(result, "citations", [])]
-            trace.step(name, input_summary=query, output_summary=getattr(result, "answer", ""),
-                       duration_ms=t.ms, token_usage=tok, hit_docs=hit)
-            outputs[name] = result
-            citations.extend(getattr(result, "citations", []))
-            if getattr(result, "need_human", False):
-                need_human = True
-            if getattr(result, "need_ticket", False):
-                need_ticket = True
+    async def ticket_node(state):
+        if not state.get("pending_ticket"):
+            return {"planned_ticket": None}
+        outcomes = list(state.get("agent_outputs", {}).values())
+        return {"planned_ticket": ticket.build_args(
+            query=state["query"], intent=state["intent"], entities=state.get("entities", {}),
+            ai_diagnosis="\n".join(o.answer for o in outcomes if o.status != "failed"),
+            evidence={key: outcome.evidence for key, outcome in state.get("agent_outputs", {}).items()},
+        )}
 
-        return {
-            "agent_outputs": outputs,
-            "rag_citations": citations,
-            "need_human": need_human or state["intent"] == "ticket",
-            "pending_ticket": need_ticket,
-        }
-
-    async def ticket_node(state: AgentState) -> dict:
-        outputs = state.get("agent_outputs", {})
-        need_ticket = state.get("pending_ticket") or state.get("need_human")
-        if not need_ticket:
-            return {}
-        # 汇总现有诊断作为工单上下文
-        ai_diag = ""
-        evidence = {}
-        if "api_diagnostic" in outputs:
-            ai_diag = outputs["api_diagnostic"].answer
-            evidence = outputs["api_diagnostic"].evidence
-        elif "billing" in outputs:
-            ai_diag = outputs["billing"].answer
-            evidence = outputs["billing"].evidence
-        with timer() as t:
-            tk = await ticket.create_from_context(
-                query=state["query"], intent=state["intent"], entities=state.get("entities", {}),
-                ai_diagnosis=desensitize.desensitize_text(ai_diag),
-                evidence=desensitize.desensitize_obj(evidence), ctx=ctx,
-                user_id=state.get("user_id", ""), conversation_id=state["conversation_id"])
-        trace.step("ticket", input_summary=state["query"], output_summary=tk.message, duration_ms=t.ms)
-        return {"ticket_id": tk.ticket_id, "ticket_message": tk.message}
-
-    async def summarize_node(state: AgentState) -> dict:
-        outputs = state.get("agent_outputs", {})
-        cards = []
-        for name in ("api_diagnostic", "billing", "doc_rag"):
-            o = outputs.get(name)
-            if o is not None and getattr(o, "card", None):
-                cards.append(o.card)
-        general = outputs.get("general")
-
-        card = None
-        if general and not cards:
-            draft = general
-        elif len(cards) == 1:
-            card = cards[0]
-            draft = render_card(card)
-        elif len(cards) > 1:
-            # 复合问题（如 429）：小模型合并多条结论，证据/步骤取并集
-            with timer() as t:
-                gen = await client.chat(
-                    [
-                        {"role": "system", "content": "把以下多条结论合并成一句连贯、无重复、结论先行的中文结论，只输出结论本身。"},
-                        {"role": "user", "content": "\n".join(c["conclusion"] for c in cards)},
-                    ],
-                    model=model_for("summarize"), temperature=0.2)
-            trace.step("summarize", output_summary=gen.content, duration_ms=t.ms, token_usage=gen.total_tokens)
-            card = {
-                "conclusion": gen.content.strip(),
-                "evidence": [e for c in cards for e in c["evidence"]],
-                "steps": [s for c in cards for s in c["steps"]],
-            }
-            draft = render_card(card)
-        else:
-            draft = "这个问题我先帮你转接人工技术支持，请稍候。"
+    async def summarize_node(state):
+        outcomes = list(state.get("agent_outputs", {}).values())
+        useful = [o for o in outcomes if o.status != "failed" and o.answer]
+        draft = "\n\n".join(o.answer for o in useful) or "技术服务暂时无法完成诊断。"
+        if useful and any(o.status == "failed" for o in outcomes):
+            draft += "\n\n部分诊断暂未完成，以上仅包含已有证据支持的结果。"
+        # 有业务动作时正文展示固定确认信息，避免卡片遮住实际动作状态。
+        card = useful[0].card if len(useful) == 1 and not state.get("pending_ticket") else None
         return {"draft_answer": draft, "card": card}
 
-    async def security_node(state: AgentState) -> dict:
-        from app.guardrail import desensitize
-        with timer() as t:
-            res = security.review_output(state.get("draft_answer", ""))
-            card = state.get("card")
-            clean_card = desensitize.desensitize_obj(card) if card else None
-        trace.step("security", output_summary=f"脱敏类型={res.sensitive_found}", duration_ms=t.ms)
-        return {"final_answer": res.clean_text, "card": clean_card}
+    async def security_node(state):
+        return {"final_answer": security.review_output(state["draft_answer"]).clean_text,
+                "card": desensitize.desensitize_obj(state.get("card"))}
 
     g = StateGraph(AgentState)
-    g.add_node("load_context", load_context)
-    g.add_node("intent", intent_node)
-    g.add_node("clarify", clarify_node)
-    g.add_node("semantic_cache", semantic_cache_node)
-    g.add_node("specialists", specialists_node)
-    g.add_node("ticket", ticket_node)
-    g.add_node("summarize", summarize_node)
-    g.add_node("security", security_node)
-
+    for name, node in (("load_context", load_context), ("intent", intent_node),
+                       ("clarify", clarify_node), ("semantic_cache", cache_node),
+                       ("specialists", specialists_node), ("ticket", ticket_node),
+                       ("summarize", summarize_node), ("security", security_node)):
+        g.add_node(name, node)
     g.add_edge(START, "load_context")
     g.add_edge("load_context", "intent")
     g.add_conditional_edges("intent", after_intent, {
-        "clarify": "clarify",
-        "semantic_cache": "semantic_cache",
-        "specialists": "specialists",
-    })
+        "clarify": "clarify", "semantic_cache": "semantic_cache", "specialists": "specialists"})
     g.add_edge("clarify", END)
-    g.add_conditional_edges("semantic_cache", after_semantic_cache, {"cached": END, "miss": "specialists"})
-    g.add_edge("specialists", "ticket")
-    g.add_edge("ticket", "summarize")
-    g.add_edge("summarize", "security")
-    g.add_edge("security", END)
+    g.add_conditional_edges("semantic_cache", lambda s: "cached" if s.get("from_cache") else "miss",
+                            {"cached": END, "miss": "specialists"})
+    for before, after in (("specialists", "ticket"), ("ticket", "summarize"),
+                          ("summarize", "security"), ("security", END)):
+        g.add_edge(before, after)
     return g.compile()
 
 
-async def run(
-    *, query: str, tenant_id: str, user_id: str, conversation_id: str, is_internal: bool = False,
-    role: str = "",
-) -> dict:
-    """执行一次完整编排，返回结果并持久化链路与记忆。"""
-    ctx = ToolContext(tenant_id=tenant_id, user_id=user_id, role=role)
+async def run(*, query, tenant_id, user_id, conversation_id, is_internal=False, role="",
+              context=None, operation_id=""):
+    ctx = ToolContext(tenant_id=tenant_id, user_id=user_id, role=role, operation_id=operation_id)
     require_identity(ctx)
     query = desensitize.desensitize_text(query)
     trace = TraceCollector(tenant_id=tenant_id, conversation_id=conversation_id)
     ctx.trace_id = trace.trace_id
-
-    graph = build_graph(ctx, trace)
-
-    init: AgentState = {
-        "tenant_id": tenant_id, "user_id": user_id, "conversation_id": conversation_id,
-        "is_internal": ctx.is_internal, "query": query,
-    }
+    initial = {"tenant_id": tenant_id, "user_id": user_id, "conversation_id": conversation_id,
+               "is_internal": ctx.is_internal, "query": query}
+    if context is not None:
+        initial.update(history=context["history"], collected_entities=context["entities"])
     try:
-        final = await graph.ainvoke(init)
+        final = await build_graph(ctx, trace).ainvoke(initial)
     except desensitize.SensitiveDataError:
         raise
-    except Exception:  # noqa: BLE001  管线级兜底：规则回复 + 自动建单转人工
-        trace.step("fallback", input_summary=query, status="error", error="编排执行失败")
-        tk = await ticket.create_from_context(
-            query=query, intent="ticket", entities={}, ai_diagnosis="",
-            evidence={"pipeline_error": "编排执行失败"}, ctx=ctx,
-            user_id=user_id, conversation_id=conversation_id)
-        await trace.persist()
-        return _finalize_result({
-            "answer": f"{fallback.rule_reply(None)}（工单号 {tk.ticket_id}）",
-            "intent": None, "confidence": 0.0, "citations": [], "need_human": True,
-            "ticket_id": tk.ticket_id, "trace_id": trace.trace_id,
-            "total_tokens": trace.total_tokens, "entities": {}, "need_clarify": False,
-        })
-
-    # 建单友好提示统一在此拼接（最终状态稳定含 ticket_message，避免节点可见性时序问题）
-    answer = final.get("final_answer", "")
-    ticket_message = final.get("ticket_message")
-    if ticket_message and ticket_message not in answer:
-        answer = f"{answer}\n\n{ticket_message}"
-
-    result = {
-        "answer": answer,
-        "intent": final.get("intent"),
-        "confidence": final.get("confidence"),
-        "citations": final.get("rag_citations", []),
-        "card": final.get("card"),
-        "need_human": final.get("need_human", False),
-        "ticket_id": final.get("ticket_id"),
-        "trace_id": trace.trace_id,
+    except Exception:
+        trace.step("fallback", status="error", error="编排执行失败")
+        final = {"final_answer": "技术服务暂时无法完成诊断。", "handoff_requested": True,
+                 "planned_ticket": ticket.build_args(query=query, intent="ticket", entities={},
+                    ai_diagnosis="", evidence={"pipeline_error": "编排执行失败"})}
+    result = _finalize_result({
+        "answer": final.get("final_answer", ""), "intent": final.get("intent"),
+        "confidence": final.get("confidence", 0), "citations": final.get("rag_citations", []),
+        "card": final.get("card"), "trace_id": trace.trace_id,
         "total_tokens": trace.total_tokens,
-        "entities": final.get("entities", {}),
-        "need_clarify": final.get("need_clarify", False),
+        **({"entities": final["entities"]} if "entities" in final else {}),
+        "need_human": False, "ticket_id": None, "need_clarify": final.get("need_clarify", False),
         "from_cache": final.get("from_cache", False),
-    }
-
-    # 所有分支（包括缓存、澄清、工单提示）在任何附属写入前统一处理。
-    result = _finalize_result(result)
-    # 记忆：写入本轮对话
-    await session.append_message(conversation_id, "user", query)
-    await session.append_message(conversation_id, "assistant", result["answer"])
-    # 持久化链路
-    await trace.persist()
-    # 成本统计
-    await cost.record(tenant_id, conversation_id, "mixed", trace.total_tokens)
-    # 语义缓存：仅缓存通用文档问答结果
-    if (
-        final.get("intent") == "doc_qa"
-        and not final.get("need_clarify")
-        and not final.get("need_human")
-        and not final.get("history")
-        and not result["from_cache"]
-        and result["answer"]
-        and final.get("query_embedding") is not None
-    ):
-        await semantic_cache.put(tenant_id, query, result, final["query_embedding"])
-
+        "handoff_requested": final.get("handoff_requested", False),
+        "planned_ticket": final.get("planned_ticket"),
+    })
+    effects = {"trace": {"trace_id": trace.trace_id, "steps": trace.steps},
+               "cost": {"total_tokens": trace.total_tokens}}
+    if final.get("route_cache_entry"):
+        effects["route_cache"] = {"query": query, "result": final["route_cache_entry"]}
+    outcomes = final.get("agent_outputs", {})
+    if (final.get("intent") == "doc_qa" and not result["planned_ticket"]
+            and not result["need_clarify"] and not result["from_cache"] and not final.get("history")
+            and final.get("query_embedding") is not None
+            and outcomes and all(o.status == "answered" for o in outcomes.values())):
+        effects["semantic_cache"] = {"query": query, "result": result,
+                                     "embedding": final["query_embedding"]}
+    result["_effects"] = desensitize.desensitize_obj(effects)
     return result

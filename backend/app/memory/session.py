@@ -31,15 +31,15 @@ async def append_message(conv_id: str, role: str, content: str) -> None:
 
 
 async def get_history(conv_id: str) -> list[dict]:
-    r = get_redis()
-    items = await r.lrange(_hist_key(conv_id), 0, -1)
-    return desensitize.desensitize_obj([json.loads(x) for x in items])
+    from app.memory.context import load
+
+    return (await load(conv_id))["history"]
 
 
 async def get_entities(conv_id: str) -> dict:
-    r = get_redis()
-    raw = await r.get(_ent_key(conv_id))
-    return desensitize.desensitize_obj(json.loads(raw)) if raw else {}
+    from app.memory.context import load
+
+    return (await load(conv_id))["entities"]
 
 
 async def update_entities(conv_id: str, new_entities: dict) -> dict:

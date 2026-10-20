@@ -19,6 +19,18 @@ CATEGORY_MAP = {
 }
 
 
+def build_args(*, query, intent, entities, ai_diagnosis, evidence):
+    category, priority = CATEGORY_MAP.get(intent, ("咨询", "P3"))
+    return desensitize.desensitize_obj({
+        "title": query.strip()[:60] or f"{category}工单", "category": category,
+        "priority": priority, "summary": query.strip()[:500],
+        "related_request_ids": [entities["request_id"]] if entities.get("request_id") else [],
+        "related_endpoint": entities.get("endpoint"), "error_code": entities.get("error_code"),
+        "evidence": json.dumps(evidence, ensure_ascii=False)[:2000],
+        "ai_diagnosis": (ai_diagnosis or "")[:2000],
+    })
+
+
 @dataclass
 class TicketResult:
     ticket_id: str | None

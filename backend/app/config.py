@@ -5,6 +5,7 @@
 from functools import lru_cache
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 
 class Settings(BaseSettings):
@@ -80,6 +81,11 @@ class Settings(BaseSettings):
     # ----- 其它 -----
     app_env: str = "dev"
     log_level: str = "INFO"
+    conversation_lease_seconds: int = Field(default=90, ge=3)
+    conversation_heartbeat_seconds: int = Field(default=20, ge=1)
+    conversation_run_seconds: int = Field(default=300, ge=1)
+    cache_timeout_seconds: float = Field(default=1.0, gt=0)
+    effect_worker_enabled: bool = True
 
     @property
     def mysql_dsn_async(self) -> str:

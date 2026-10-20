@@ -3,16 +3,19 @@
 """对话/工单相关 DTO。"""
 
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel
 
 
 class ChatRequest(BaseModel):
+    request_id: UUID
     message: str
     conversation_id: str | None = None
 
 
 class FeedbackRequest(BaseModel):
+    request_id: UUID
     conversation_id: str
     message_id: str | None = None
     type: Literal["resolved", "unresolved", "need_human"]

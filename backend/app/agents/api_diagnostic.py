@@ -7,9 +7,9 @@
 
 import asyncio
 import json
-from dataclasses import dataclass, field
 
 from app.agents import doc_rag
+from app.agents.outcomes import AgentOutcome
 from app.agents.util import normalize_card, parse_json, render_card
 from app.db import AsyncSessionLocal
 from app.llm import client
@@ -29,15 +29,7 @@ async def _error_doc_fast(error_code: str):
     return answer, citations
 
 
-@dataclass
-class DiagResult:
-    answer: str
-    evidence: dict = field(default_factory=dict)
-    citations: list[dict] = field(default_factory=list)
-    error_code: str | None = None
-    need_ticket: bool = False
-    tokens: int = 0
-    card: dict | None = None
+DiagResult = AgentOutcome
 
 
 async def diagnose(query: str, entities: dict, ctx: ToolContext, *, is_rate_limit: bool = False) -> DiagResult:
@@ -68,7 +60,12 @@ async def diagnose(query: str, entities: dict, ctx: ToolContext, *, is_rate_limi
         return await execute("query_apikey_status", {"app_id": app_id}, ctx) if need_apikey else None
 
     async def _stats():
-        return await execute("query_recent_call_stats", {"endpoint": endpoint, "minutes": 60}, ctx) if need_stats else None
+        if not need_stats:
+            return None
+        args = {"endpoint": endpoint, "minutes": 60}
+        if evidence.get("call_log", {}).get("found"):
+            args["request_id"] = request_id
+        return await execute("query_recent_call_stats", args, ctx)
 
     async def _doc():
         # 热路径：已知错误码直查 error_code 表，跳过 RAG 的 embed/rerank/generate
@@ -85,7 +82,7 @@ async def diagnose(query: str, entities: dict, ctx: ToolContext, *, is_rate_limi
     rk, rs, doc_res = await asyncio.gather(_apikey(), _stats(), _doc())
     if rk and rk["ok"]:
         evidence["apikey_status"] = rk["data"]
-    if rs and rs["ok"] and rs["data"].get("total"):
+    if rs and rs["ok"] and rs["data"].get("found", True):
         evidence["recent_stats"] = rs["data"]
     _, doc_answer, citations, doc_tokens = doc_res
 

@@ -3,6 +3,8 @@
 """FastAPI 应用入口。"""
 
 import logging
+import asyncio
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -20,7 +22,21 @@ install_safe_logging()
 logging.basicConfig(level=settings.log_level)
 logger = logging.getLogger("devsupport")
 
+@asynccontextmanager
+async def lifespan(_app):
+    from app.effects import worker
+    task = asyncio.create_task(worker()) if settings.effect_worker_enabled else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="DevSupport AI",
     description="面向 API 开放平台的多 Agent 智能技术支持系统",
     version="0.1.0",

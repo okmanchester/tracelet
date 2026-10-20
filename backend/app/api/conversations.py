@@ -2,13 +2,14 @@
 # @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
 """会话查询接口。"""
 
-import uuid
-
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.access import assert_conversation_access, can_write_conversation, conversation_read_filter
+from app import effects
+from app.conversation_service import append_message, locked_conversation
+from app.operations import db_now
 from app.db import get_db
 from app.deps import CurrentUser, get_current_user
 from app.guardrail import desensitize
@@ -46,7 +47,8 @@ async def get_conversation(
     assert_conversation_access(user, conv)
     msgs = (
         await db.execute(
-            select(Message).where(Message.conversation_id == conv_id).order_by(Message.created_at)
+            select(Message).where(Message.conversation_id == conv_id).order_by(
+                Message.sequence, Message.created_at, Message.id)
         )
     ).scalars().all()
     return {
@@ -71,16 +73,14 @@ async def add_customer_message(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """客户在人工模式下补充消息（不走 AI），供「我的会话」回话使用。"""
-    conv = (
-        await db.execute(select(Conversation).where(Conversation.id == conv_id))
-    ).scalar_one_or_none()
+    conv = await locked_conversation(db, conv_id)
     if conv is None:
         raise HTTPException(404, "会话不存在")
     assert_conversation_access(user, conv, write=True)
-    msg = Message(
-        id="msg_" + uuid.uuid4().hex[:12], conversation_id=conv_id, role="user",
-        content=desensitize.desensitize_text(content),
-    )
-    db.add(msg)
+    now = await db_now(db)
+    if conv.active_operation_id and conv.lease_until and conv.lease_until > now:
+        raise HTTPException(409, "会话正在处理，请稍后重试")
+    msg = append_message(db, conv, "user", content)
+    effects.enqueue(db, msg.id, conv.id, conv.tenant_id)
     await db.commit()
     return {"ok": True, "message_id": msg.id}

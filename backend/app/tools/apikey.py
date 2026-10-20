@@ -2,10 +2,9 @@
 # @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
 """API Key 状态查询工具（真实查询 MySQL）。"""
 
-from datetime import datetime
-
 from sqlalchemy import select
 
+from app import clock
 from app.db import AsyncSessionLocal
 from app.models import ApiKey
 from app.tools.registry import ToolContext, ToolSpec, register
@@ -28,15 +27,15 @@ async def query_apikey_status(args: dict, ctx: ToolContext) -> dict:
         keys = [k for k in keys if ctx.is_internal or k.tenant_id == ctx.tenant_id]
         if not keys:
             return {"found": False, "reason": "未找到对应 API Key 或无权访问"}
-        now = datetime(2026, 6, 15)  # 固定为演示数据基准时间，保证过期判定可复现
+        now = clock.now_utc()
         return {
             "found": True,
             "keys": [
                 {
                     "api_key_masked": k.key_masked,
                     "status": k.status,
-                    "expire_at": k.expire_at.isoformat() if k.expire_at else None,
-                    "expired": bool(k.expire_at and k.expire_at < now),
+                    "expire_at": clock.as_utc(k.expire_at).isoformat() if k.expire_at else None,
+                    "expired": bool(k.expire_at and clock.as_utc(k.expire_at) <= now),
                 }
                 for k in keys
             ],

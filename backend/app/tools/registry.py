@@ -9,6 +9,7 @@
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from app.db import AsyncSessionLocal
 from app.guardrail import desensitize
 from app.models import ToolCallLog
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ToolContext:
@@ -27,6 +30,7 @@ class ToolContext:
     is_internal: bool = False
     user_id: str = ""
     role: str = ""
+    operation_id: str = ""
 
     def __post_init__(self):
         self.is_internal = self.role in INTERNAL_ROLES and bool(self.user_id and self.tenant_id)
@@ -42,6 +46,8 @@ class ToolSpec:
     retries: int = 1
     high_risk: bool = False
     category: str = "general"
+    mutating: bool = False
+    idempotent: bool = False
 
 
 REGISTRY: dict[str, ToolSpec] = {}
@@ -88,6 +94,15 @@ async def _log_call(ctx, name, args, result, status, duration_ms, error):
         await s.commit()
 
 
+async def _record_call(ctx, name, args, result, status, duration_ms, error):
+    """附属日志异常不能触发业务重放或改变工具执行结果。"""
+    try:
+        await _log_call(ctx, name, args, result, status, duration_ms, error)
+    except Exception:  # noqa: BLE001
+        # 不包含异常载荷、参数、结果或 traceback，避免泄露原文。
+        logger.warning("工具调用日志保存失败")
+
+
 async def execute(name: str, args: dict, ctx: ToolContext) -> dict:
     """执行工具：高风险拦截 + 超时 + 重试 + 脱敏日志。"""
     require_identity(ctx)
@@ -102,23 +117,27 @@ async def execute(name: str, args: dict, ctx: ToolContext) -> dict:
 
     start = time.perf_counter()
     last_err = None
-    for attempt in range(spec.retries + 1):
+    last_status = "failed"
+    retries = spec.retries if not spec.mutating or spec.idempotent else 0
+    for attempt in range(retries + 1):
         try:
             data = await asyncio.wait_for(spec.func(args, ctx), timeout=spec.timeout)
             data = desensitize.desensitize_obj(data)
-            duration = int((time.perf_counter() - start) * 1000)
-            result = {"ok": True, "data": data}
-            await _log_call(ctx, name, args, data, "ok", duration, None)
-            return result
         except asyncio.TimeoutError:
             last_err = f"工具调用超时(>{spec.timeout}s)"
+            last_status = "unknown" if spec.mutating else "failed"
         except desensitize.SensitiveDataError:
             raise
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             last_err = "工具执行失败"
+            last_status = "unknown" if spec.mutating and not isinstance(exc, ValueError) else "failed"
+        else:
+            duration = int((time.perf_counter() - start) * 1000)
+            await _record_call(ctx, name, args, data, "ok", duration, None)
+            return {"ok": True, "data": data}
     duration = int((time.perf_counter() - start) * 1000)
-    await _log_call(ctx, name, args, {}, "error", duration, last_err)
-    return {"ok": False, "error": last_err}
+    await _record_call(ctx, name, args, {}, "error", duration, last_err)
+    return {"ok": False, "error": last_err, **({"operation_status": last_status} if spec.mutating else {})}
 
 
 def load_tools() -> None:

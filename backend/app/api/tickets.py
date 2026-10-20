@@ -6,16 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-import uuid
-from datetime import datetime
-
 from sqlalchemy import desc
 
 from app.access import assert_conversation_access, ticket_read_filter
 from app.db import get_db
 from app.deps import CurrentUser, get_current_user
 from app.guardrail import desensitize
-from app.models import Conversation, Feedback, Message, Ticket
+from app.models import Conversation, Message, Ticket
 from app.schemas.chat import FeedbackRequest
 
 router = APIRouter(prefix="/api", tags=["tickets"])
@@ -62,46 +59,58 @@ async def ticket_detail(
 
 
 @router.post("/feedback")
-async def submit_feedback(
-    body: FeedbackRequest, user: CurrentUser = Depends(get_current_user), db: AsyncSession = Depends(get_db)
-) -> dict:
-    conv = (
-        await db.execute(select(Conversation).where(Conversation.id == body.conversation_id))
-    ).scalar_one_or_none()
-    if conv is None:
-        raise HTTPException(404, "会话不存在")
-    assert_conversation_access(user, conv, write=True)
-    if body.message_id is not None:
-        message = (await db.execute(select(Message.id).where(
-            Message.id == body.message_id, Message.conversation_id == conv.id,
-        ))).scalar_one_or_none()
-        if message is None:
-            raise HTTPException(422, "反馈消息不属于该会话")
-    db.add(Feedback(conversation_id=body.conversation_id, message_id=body.message_id,
-                    tenant_id=conv.tenant_id, type=body.type))
-    # 反馈分三类：resolved/unresolved 记满意度，need_human 触发转人工建单
-    if body.type in ("resolved", "unresolved"):
-        conv.satisfaction = body.type
-        conv.resolved_by_ai = body.type == "resolved"
+async def submit_feedback(body: FeedbackRequest, user: CurrentUser = Depends(get_current_user),
+                          db: AsyncSession = Depends(get_db)) -> dict:
+    from fastapi.responses import JSONResponse
+    from app import operations, turns
+    from app.api.chat import known_or_unknown
 
-    ticket_id = None
-    if body.type == "need_human":
-        conv.transferred_to_human = True
-        # 一键转人工：真实创建工单，附最近一条用户问题作为上下文
-        last_user = (
-            await db.execute(
-                select(Message)
-                .where(Message.conversation_id == conv.id, Message.role == "user")
-                .order_by(desc(Message.created_at))
-            )
-        ).scalars().first()
-        title = desensitize.desensitize_text(last_user.content if last_user else "用户请求人工支持")[:60]
-        ticket_id = "tk_" + datetime(2026, 6, 15).strftime("%Y%m%d") + "_" + uuid.uuid4().hex[:6]
-        db.add(Ticket(
-            ticket_id=ticket_id, tenant_id=conv.tenant_id, user_id=user.user_id,
-            category="人工支持", priority="P2", status="new", title=title,
-            summary=title, ai_diagnosis="用户在会话中主动请求人工支持",
-            conversation_id=conv.id,
-        ))
-    await db.commit()
-    return {"ok": True, "ticket_id": ticket_id}
+    handle, draft = None, None
+    try:
+        conv = (await db.execute(select(Conversation).where(
+            Conversation.id == body.conversation_id))).scalar_one_or_none()
+        if conv is None:
+            raise HTTPException(404, "会话不存在")
+        assert_conversation_access(user, conv, write=True)
+        if body.message_id is not None:
+            message = (await db.execute(select(Message.id).where(
+                Message.id == body.message_id, Message.conversation_id == conv.id))).scalar_one_or_none()
+            if message is None:
+                raise HTTPException(422, "反馈消息不属于该会话")
+        handle, cached = await operations.receive(db, user, "feedback", body.request_id,
+            {"conversation_id": body.conversation_id, "message_id": body.message_id, "type": body.type})
+        if cached is not None:
+            result = cached
+        else:
+            draft = handle.draft or {"answer": "反馈已记录。"}
+            if body.type == "need_human" and not handle.draft:
+                last = (await db.execute(select(Message).where(
+                    Message.conversation_id == body.conversation_id, Message.role == "user"
+                ).order_by(Message.sequence.desc(), desc(Message.created_at)).limit(1))).scalars().first()
+                title = desensitize.desensitize_text(last.content if last else "用户请求人工支持")[:60]
+                draft = {"answer": "", "handoff_requested": True,
+                         "planned_ticket": {"title": title, "summary": title,
+                                            "category": "人工支持", "priority": "P2"}}
+            await db.rollback()
+            result = await turns.finish(db, user, handle, draft, feedback=body)
+    except HTTPException:
+        await db.rollback()
+        raise
+    except desensitize.SensitiveDataError:
+        await db.rollback()
+        raise
+    except Exception:
+        import contextlib
+        with contextlib.suppress(Exception):
+            await db.rollback()
+        try:
+            result = await turns.recover_failure(user, handle, draft) if handle else (
+                await known_or_unknown(user, "feedback", body.request_id))
+        except desensitize.SensitiveDataError:
+            raise
+        except Exception:
+            result = await known_or_unknown(user, "feedback", body.request_id)
+    if result["operation_status"] == "succeeded":
+        return result
+    return JSONResponse(status_code=202 if result["operation_status"] == "processing" else 503,
+                        content=result)

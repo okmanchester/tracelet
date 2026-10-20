@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from sqlalchemy import func, select
 
+from app import clock
 from app.db import AsyncSessionLocal
 from app.models import ApiCallLog, ApiKey
 from app.tools.registry import ToolContext, ToolSpec, register
@@ -45,32 +46,34 @@ async def query_call_log(args: dict, ctx: ToolContext) -> dict:
 
 
 async def query_recent_call_stats(args: dict, ctx: ToolContext) -> dict:
-    """统计近 N 分钟某接口的调用情况（用于 429 限流诊断）。"""
+    """统计 (start, end]；默认截至当前 UTC，提供 request_id 时截至该历史事件。"""
     endpoint = args.get("endpoint")
-    minutes = int(args.get("minutes", 240))
+    minutes = args.get("minutes", 60)
+    if isinstance(minutes, bool) or not isinstance(minutes, int) or minutes <= 0:
+        raise ValueError("minutes 必须为正整数")
+    request_id = args.get("request_id")
+    anchor = clock.now_utc()
     async with AsyncSessionLocal() as s:
-        # 锚点：优先定位该租户(+接口)最近一次 429 限流事件的时间；无 429 则用最近一条日志。
-        # 这样能围绕"限流事件"统计窗口，不依赖系统当前时间，也不被随机背景日志漂移。
         base_conds = [ApiCallLog.tenant_id == ctx.tenant_id]
         if endpoint:
             base_conds.append(ApiCallLog.endpoint == endpoint)
-        anchor = (
-            await s.execute(
-                select(func.max(ApiCallLog.created_at)).where(
-                    *base_conds, ApiCallLog.http_status == 429
-                )
-            )
-        ).scalar()
-        if anchor is None:
+        if request_id is not None:
+            # 历史窗口必须由明确的、本租户可见的事件决定，不隐式挑选最近 429。
             anchor = (
-                await s.execute(select(func.max(ApiCallLog.created_at)).where(*base_conds))
+                await s.execute(select(ApiCallLog.created_at).where(
+                    *base_conds, ApiCallLog.request_id == request_id,
+                ))
             ).scalar()
-        if anchor is None:
-            return {"total": 0, "by_status": {}}
-        since = anchor - timedelta(minutes=minutes)
-        conds = [ApiCallLog.tenant_id == ctx.tenant_id, ApiCallLog.created_at >= since]
-        if endpoint:
-            conds.append(ApiCallLog.endpoint == endpoint)
+            if anchor is None:
+                return {"found": False, "reason": "未找到对应调用事件或无权访问"}
+        anchor = clock.as_utc(anchor)
+        try:
+            since = anchor - timedelta(minutes=minutes)
+        except OverflowError:
+            raise ValueError("minutes 超出可用时间范围") from None
+        conds = [*base_conds,
+                 ApiCallLog.created_at > clock.storage_utc(since),
+                 ApiCallLog.created_at <= clock.storage_utc(anchor)]
         rows = (
             await s.execute(
                 select(ApiCallLog.http_status, func.count())
@@ -82,8 +85,12 @@ async def query_recent_call_stats(args: dict, ctx: ToolContext) -> dict:
         total = sum(by_status.values())
         n429 = by_status.get(429, 0)
         return {
+            "found": True,
             "endpoint": endpoint,
             "window_minutes": minutes,
+            "window_mode": "historical" if request_id is not None else "realtime",
+            "window_start": since.isoformat(),
+            "window_end": anchor.isoformat(),
             "total": total,
             "by_status": by_status,
             "rate_limited_count": n429,
@@ -105,12 +112,13 @@ register(ToolSpec(
 
 register(ToolSpec(
     name="query_recent_call_stats",
-    description="统计某接口近 N 分钟的调用量与各状态码分布，用于判断是否触发限流(429)。",
+    description="统计某接口截至当前 UTC 的近 N 分钟调用量；提供 request_id 则统计截至该历史调用事件的窗口 (start, end]。",
     parameters={
         "type": "object",
         "properties": {
             "endpoint": {"type": "string", "description": "接口路径，如 /v1/risk/score"},
-            "minutes": {"type": "integer", "description": "时间窗口（分钟），默认 60"},
+            "minutes": {"type": "integer", "minimum": 1, "description": "时间窗口（分钟），默认 60"},
+            "request_id": {"type": "string", "description": "可选：以本租户该调用事件时间为窗口上界，不提供则使用当前 UTC"},
         },
     },
     func=query_recent_call_stats,

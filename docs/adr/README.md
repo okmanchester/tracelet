@@ -81,6 +81,10 @@ Accepted 表示选择获准，不表示已经实施或问题已解决。实施�
 | [0001](0001-managed-mysql-migrations.md) | 使用 Alembic 管理 MySQL 迁移并显式接管已有数据库 | Accepted | 2026-10-19 | [ARCH-008](../architecture/known-issues.md#arch-008)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 | [0002](0002-conversation-ticket-access.md) | 统一会话与工单的角色、归属和操作权限 | Accepted | 2026-10-19 | [ARCH-001](../architecture/known-issues.md#arch-001)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 | [0003](0003-sensitive-data-boundaries.md) | 试用链路仅保留和传递脱敏内容 | Accepted | 2026-10-19 | [ARCH-006](../architecture/known-issues.md#arch-006)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
+| [0004](0004-durable-write-idempotency.md) | 以持久化操作记录保证写请求幂等 | Accepted | 2026-10-20 | [ARCH-003](../architecture/known-issues.md#arch-003)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
+| [0005](0005-agent-outcomes-and-handoff.md) | 集中决策 Agent 结果、建单与人工接管 | Accepted | 2026-10-20 | [ARCH-002](../architecture/known-issues.md#arch-002)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
+| [0006](0006-conversation-source-and-recovery.md) | 以 MySQL 为会话事实来源并恢复附属写入 | Accepted | 2026-10-20 | [ARCH-004](../architecture/known-issues.md#arch-004)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
+| [0007](0007-conversation-execution-fencing.md) | 以数据库执行租期和版本校验协调会话与接管 | Accepted | 2026-10-20 | [ARCH-005](../architecture/known-issues.md#arch-005)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 
 ## 模板来源
 

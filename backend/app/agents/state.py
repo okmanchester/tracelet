@@ -39,3 +39,6 @@ class AgentState(TypedDict, total=False):
     # 可观测
     trace_id: str
     total_tokens: int
+    handoff_requested: bool
+    planned_ticket: dict | None
+    route_cache_entry: dict | None

@@ -18,7 +18,9 @@ from scripts import migrate_db
 def test_frozen_baseline_matches_current_models_and_preserves_microseconds():
     frozen = metadata()
     assert len(frozen.tables) == 19
-    assert not schema_diff(frozen, migration.current_metadata())
+    assert set(migration.current_metadata().tables) == set(frozen.tables) | {"operation", "effect_task"}
+    assert "context_version" not in frozen.tables["conversation"].c
+    assert "sequence" not in frozen.tables["message"].c
     assert frozen.tables["message"].c.created_at.type.fsp == 6
 
 
@@ -28,7 +30,7 @@ def test_baseline_generates_offline_mysql_sql_without_current_model_ddl(monkeypa
     config = migration._configuration(None, None)
     config.output_buffer = io.StringIO()
     monkeypatch.setattr(migration.current_metadata(), "create_all", Mock(side_effect=AssertionError("ORM DDL")))
-    command.upgrade(config, "head", sql=True)
+    command.upgrade(config, migration.BASELINE, sql=True)
     sql = config.output_buffer.getvalue()
     assert sql.count("CREATE TABLE") == 20  # 19 张业务表加版本表。
     assert "DATETIME(6)" in sql
@@ -46,6 +48,15 @@ def test_mysql_reflection_differences_are_compared_semantically():
         for index in table.indexes:
             index.name = "renamed_" + index.name
     assert not schema_diff(metadata(), actual)
+
+
+def test_integer_default_reflection_quotes_are_equivalent_but_values_still_checked():
+    expected, actual = sa.MetaData(), sa.MetaData()
+    sa.Table("probe", expected, sa.Column("version", sa.Integer, server_default="0"))
+    table = sa.Table("probe", actual, sa.Column("version", sa.Integer, server_default=sa.text("'0'")))
+    assert not schema_diff(expected, actual)
+    table.c.version.server_default = sa.DefaultClause(sa.text("'1'"))
+    assert schema_diff(expected, actual) == ["列不符 probe.version"]
 
 
 @pytest.mark.parametrize("change, expected", [
@@ -98,6 +109,7 @@ def state(monkeypatch):
     monkeypatch.setattr(migration, "_history", lambda config: (migration.BASELINE, {migration.BASELINE}))
     monkeypatch.setattr(migration, "_revision", lambda connection, known: value.revision)
     monkeypatch.setattr(migration, "_read_schema", lambda connection: value.actual)
+    monkeypatch.setattr(migration, "current_metadata", metadata)
     monkeypatch.setattr(command, "upgrade", Mock())
     monkeypatch.setattr(command, "stamp", Mock())
     return value
@@ -208,7 +220,8 @@ def test_failed_unlock_invalidates_physical_connection():
 
 
 def test_real_history_is_linear_and_downgrade_is_not_silent():
-    assert migration._history(migration._configuration(None, None)) == (migration.BASELINE, {migration.BASELINE})
+    head = "0002_conversation_operations"
+    assert migration._history(migration._configuration(None, None)) == (head, {migration.BASELINE, head})
     revision = importlib.import_module("migrations.versions.0001_initial_schema")
     with pytest.raises(RuntimeError, match="删除业务数据"):
         revision.downgrade()

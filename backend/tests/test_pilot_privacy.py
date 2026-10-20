@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from app.agents import supervisor
+from app.agents.outcomes import AgentOutcome
 from app.agents.ticket import TicketResult
 from app.cache import route_cache, semantic_cache
 from app.guardrail import desensitize
@@ -186,6 +187,9 @@ async def test_redis_history_entities_route_and_answer_cache_contain_only_clean_
     monkeypatch.setattr(semantic_cache, "get_embedding_provider", lambda: SimpleNamespace(fingerprint="fake"))
     monkeypatch.setattr(semantic_cache.client, "embed_query", AsyncMock(return_value=[1.0, 0.0]))
     await session.append_message("conv_probe", "user", TEXT)
+    # 旧键仅验证写入口脱敏，不再作为线上事实读取；新投影另有真实 SQL/Redis 验收。
+    from app.memory import context as memory_context
+    monkeypatch.setattr(memory_context, "load", AsyncMock(return_value={"entities": {}}))
     await session.update_entities("conv_probe", {"notes": TEXT, "request_id": "req_20260615_8842"})
     route = {"intent": "doc_qa", "route": ["doc_rag"], "entities": {"notes": TEXT}, "confidence": 1.0}
     await route_cache.put(TEXT, route)
@@ -193,8 +197,6 @@ async def test_redis_history_entities_route_and_answer_cache_contain_only_clean_
     await semantic_cache.put("a", TEXT, result, [1.0, 0.0])
     assert_clean(redis.values)
     assert_clean(redis.lists)
-    assert_clean(await session.get_history("conv_probe"))
-    assert_clean(await session.get_entities("conv_probe"))
     assert_clean(await route_cache.get(TEXT))
     hit, _ = await semantic_cache.get("a", TEXT)
     assert hit is not None
@@ -225,20 +227,19 @@ async def test_real_graph_exits_clean_before_memory_trace_and_cache(monkeypatch,
     cached = {"answer": TEXT, "citations": [{"doc_title": TEXT}], "card": {"conclusion": TEXT}, "similarity": 1.0}
     monkeypatch.setattr(semantic_cache, "get", AsyncMock(return_value=(cached if mode == "cache" else None, [1.0, 0.0])))
     monkeypatch.setattr(semantic_cache, "put", AsyncMock())
-    monkeypatch.setattr(supervisor.cost, "record", AsyncMock())
     monkeypatch.setattr(client, "chat", AsyncMock(return_value=ChatResult(content=TEXT)))
     intent = "doc_qa" if mode in {"cache", "clarify"} else "api_error" if mode in {
         "partial_failure", "all_failure", "ticket_success", "ticket_failure",
     } else "chitchat"
     route = ["api_diagnostic", "billing"] if intent == "api_error" else []
     classify = AsyncMock(return_value={"intent": intent, "confidence": 0.1 if mode == "clarify" else 1.0,
-                                      "entities": {}, "route": route, "tokens": 0})
+                                      "entities": {"request_id": "req_20260615_8842"}, "route": route, "tokens": 0})
     if mode == "pipeline_failure":
         classify.side_effect = RuntimeError(TEXT)
     if mode == "sanitizer_failure":
         classify.side_effect = desensitize.SensitiveDataError()
     monkeypatch.setattr(supervisor.intent_router, "classify", classify)
-    result = SimpleNamespace(answer=TEXT, tokens=0, citations=[{"doc_title": TEXT}],
+    result = AgentOutcome(answer=TEXT, tokens=0, citations=[{"doc_title": TEXT}],
                              card={"conclusion": TEXT, "evidence": [TEXT], "steps": [TEXT]},
                              evidence={}, need_human=False, need_ticket=mode.startswith("ticket_"))
     diagnostic = AsyncMock(return_value=result)
@@ -266,8 +267,9 @@ async def test_real_graph_exits_clean_before_memory_trace_and_cache(monkeypatch,
     assert_clean(classify.await_args)
     assert review.call_count >= 1
     if mode in {"ticket_success", "ticket_failure", "pipeline_failure"}:
-        create.assert_awaited_once()
-        assert_clean(create.await_args)
+        create.assert_not_awaited()
+        assert output["planned_ticket"] is not None
+        assert_clean(output["planned_ticket"])
 
 
 async def test_missing_tool_identity_cannot_start_supervisor(monkeypatch):

@@ -4,6 +4,8 @@
 
 2026-10-19 已形成用户要求实施的 [试用推进路线](pilot-roadmap.md)：先完成访问与数据边界，再补业务闭环和试用准入；ADR-0002、0003 已由用户明确接受并授权实施，正式状态以各项决定与验收记录为准。
 
+2026-10-20 第二批已获用户明确接受 ADR-0004 至 0007 并授权实施；ARCH-002、003、004、005、009 已取得 [第二批隔离验收](pilot-roadmap.md#second-batch-verification)，仍须完成第三批真实依赖及浏览器准入。
+
 ## 检查基准与证据边界
 
 - 检查日期：2026-10-18（Asia/Shanghai）。
@@ -37,19 +39,21 @@ python -B -m pytest -q -p no:cacheprovider
 | 编号 | 问题 | 优先级 | 状态 | 关联 ADR |
 | --- | --- | --- | --- | --- |
 | [ARCH-001](#arch-001) | 会话权限规则不一致 | P1 | Resolved | [0002（Accepted）](../adr/0002-conversation-ticket-access.md) |
-| [ARCH-002](#arch-002) | Agent 结果与转人工行为脱节 | P1 | Open | 无 |
-| [ARCH-003](#arch-003) | 写工具重试可能重复执行 | P1 | Open | 无 |
-| [ARCH-004](#arch-004) | 会话记忆与持久化记录缺少恢复边界 | P1 | Open | 无 |
-| [ARCH-005](#arch-005) | 会话并发与人工接管缺少协调 | P1 | Open | 无 |
+| [ARCH-002](#arch-002) | Agent 结果与转人工行为脱节 | P1 | Resolved | [0005（Accepted）](../adr/0005-agent-outcomes-and-handoff.md) |
+| [ARCH-003](#arch-003) | 写工具重试可能重复执行 | P1 | Resolved | [0004（Accepted）](../adr/0004-durable-write-idempotency.md) |
+| [ARCH-004](#arch-004) | 会话记忆与持久化记录缺少恢复边界 | P1 | Resolved | [0006（Accepted）](../adr/0006-conversation-source-and-recovery.md) |
+| [ARCH-005](#arch-005) | 会话并发与人工接管缺少协调 | P1 | Resolved | [0007（Accepted）](../adr/0007-conversation-execution-fencing.md) |
 | [ARCH-006](#arch-006) | 脱敏未覆盖输入、存储与全部出口 | P1 | Resolved | [0003（Accepted）](../adr/0003-sensitive-data-boundaries.md) |
 | [ARCH-007](#arch-007) | 知识库发布与缓存版本不一致 | P1 | Deferred | 无 |
 | [ARCH-008](#arch-008) | 初始化默认删表且缺少增量迁移 | P0 | Resolved | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md) |
-| [ARCH-009](#arch-009) | 演示时间假设进入运行逻辑 | P1 | Open | 无 |
+| [ARCH-009](#arch-009) | 演示时间假设进入运行逻辑 | P1 | Resolved | 无 |
 | [ARCH-010](#arch-010) | 金额和单价使用浮点类型 | P2 | Deferred | 无 |
 | [ARCH-011](#arch-011) | 评估与业务数据、缓存未隔离 | P1 | Deferred | 无 |
 | [ARCH-012](#arch-012) | 对话通信缺少完整的失败与取消语义 | P2 | In Progress | 无 |
 | [ARCH-013](#arch-013) | 异步请求路径包含同步阻塞调用 | P2 | Open | 无 |
-| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | In Progress | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md)、[0002（Accepted）](../adr/0002-conversation-ticket-access.md)、[0003（Accepted）](../adr/0003-sensitive-data-boundaries.md) |
+| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | In Progress | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md)、[0002（Accepted）](../adr/0002-conversation-ticket-access.md)、[0003（Accepted）](../adr/0003-sensitive-data-boundaries.md)、[0004（Accepted）](../adr/0004-durable-write-idempotency.md)、[0005（Accepted）](../adr/0005-agent-outcomes-and-handoff.md)、[0006（Accepted）](../adr/0006-conversation-source-and-recovery.md)、[0007（Accepted）](../adr/0007-conversation-execution-fencing.md) |
+| [ARCH-015](#arch-015) | 人工回复、直接追加及工作台更新尚未幂等 | P2 | Open | [0004（范围参照）](../adr/0004-durable-write-idempotency.md) |
+| [ARCH-016](#arch-016) | 持久化操作及缓存去重记录缺少保留期治理 | P2 | Open | [0004](../adr/0004-durable-write-idempotency.md)、[0006](../adr/0006-conversation-source-and-recovery.md) |
 
 <a id="arch-001"></a>
 
@@ -71,7 +75,8 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-002：Agent 结果与转人工行为脱节
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / [ADR-0005（Accepted）](../adr/0005-agent-outcomes-and-handoff.md)。
+- **2026-10-20 起草时进展（后已获准并实施）**：按用户选择起草统一结果与集中决策提案；诊断建单可继续 AI，无命中先解释，全部技术失败尝试建单转人工。具体契约及事务方案保持 Proposed，尚未实施。
 - **现象**：各 Agent 返回不同结果字段，Supervisor 用 `getattr` 解释；专业 Agent 全部失败时仍汇总出“转接人工”文案，却未建单或置 need_human。诊断 need_ticket 可以建单但不改变 need_human；RAG 无命中答案没有 card，汇总时被丢弃。
 - **影响与优先级理由**：用户看到的承诺、工单和实际会话模式可能矛盾，后续扩展 Agent 或人工流程会继续继承这个歧义。
 - **代码证据**：[supervisor.py](../../backend/app/agents/supervisor.py) 的 `build_graph` 内 `specialists_node`、`ticket_node`、`summarize_node`；[doc_rag.py](../../backend/app/agents/doc_rag.py) 的 `RagResult`、`answer`；[chat.py](../../backend/app/api/chat.py) 的 `chat`。
@@ -79,11 +84,14 @@ python -B -m pytest -q -p no:cacheprovider
 - **建议方向（待讨论）**：统一 Agent 结果契约与失败分类，集中决策建单、人工模式及文案；只有动作成功才声称“已完成”。
 - **验收条件**：全失败、部分失败、无命中、证据不足、建单失败及主动转人工均有确定结果；回复与真实动作一致；明确并验证建单与人工模式的关系。
 
+- **2026-10-20 实施与验收**：统一 AgentOutcome 和集中决策已实现；无命中保留解释、部分失败保留有效结果，全部技术失败及明确人工需求形成待提交动作。建单与模式确认在最终事务完成，失败不声称成功。真实图结果矩阵及 SQL 建单/反馈回归通过。 实现基准为 `91b7209` 加本批工作区；完整隔离 **238 passed，零失败/错误/跳过**，前端 **15 passed** 及构建通过。范围和剩余限制见 [第二批验收](pilot-roadmap.md#second-batch-verification)，据此更新为 Resolved；不代表真实浏览器或外部模型已验收。
+
 <a id="arch-003"></a>
 
 ## ARCH-003：写工具重试可能重复执行
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / [ADR-0004（Accepted）](../adr/0004-durable-write-idempotency.md)。
+- **2026-10-20 起草时进展（后已获准并实施）**：已起草持久化操作、可信请求身份、同库事务及结果查询方案，保持 Proposed。独立普通修复已将 `_record_call` 放在业务重试块之外，日志异常只记录固定告警，不重放成功业务或覆盖失败结果；没有改变真实执行异常的重试预算，尚无持久化幂等或统一建单，因此不能关闭本问题。新增 [日志隔离回归](../../backend/tests/test_tool_log_isolation.py)；实际验收另行追加。
 - **现象**：`execute` 把业务工具执行和 `_log_call` 放在同一重试块。写入成功后日志失败会重放工具；`create_ticket` 每次生成新 ID 并独立提交，缺少请求幂等约束。反馈转人工另有直接建单路径。
 - **影响与优先级理由**：重试、重复提交或异常恢复可能产生重复工单；后续接入真实写操作前必须处理。
 - **代码证据**：[registry.py](../../backend/app/tools/registry.py) 的 `ToolSpec`、`execute`；[ticket_tools.py](../../backend/app/tools/ticket_tools.py) 的 `create_ticket`；[tickets.py](../../backend/app/api/tickets.py) 的 `submit_feedback`。
@@ -91,11 +99,14 @@ python -B -m pytest -q -p no:cacheprovider
 - **建议方向（待讨论）**：区分读写重试；日志失败不重放业务；为写操作设计持久化幂等键、唯一约束及结果查询，并统一建单入口。
 - **验收条件**：同一业务请求重复提交、超时重试及日志失败均不会产生重复业务记录；能区分执行失败与结果未知，返回同一已提交结果。
 
+- **2026-10-20 实施与验收**：聊天、反馈、独立建单工具共用可信持久化操作及唯一约束；日志不重放业务，写重试要求声明幂等能力，提交后异常从新连接查询。独立 SQL 验证首次会话重试、内容冲突、重复反馈、失败草稿重用及 commit 后抛错不产生重复工单。 实现基准为 `91b7209` 加本批工作区；完整隔离 **238 passed，零失败/错误/跳过**，前端 **15 passed** 及构建通过。范围和剩余限制见 [第二批验收](pilot-roadmap.md#second-batch-verification)，据此更新为 Resolved；不代表真实浏览器或外部模型已验收。
+
 <a id="arch-004"></a>
 
 ## ARCH-004：会话记忆与持久化记录缺少恢复边界
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / [ADR-0006（Accepted）](../adr/0006-conversation-source-and-recovery.md)。
+- **2026-10-20 起草时进展（后已获准并实施）**：已起草 SQL 事实、版本投影、统一消息与事务性附属任务方案，保持 Proposed；Redis 及附属故障的恢复能力尚未实施验收。
 - **现象**：MySQL 保存消息，编排却只从 Redis 加载历史与实体，Redis 记忆 TTL 为 6 小时；人工及直接追加消息路径未更新 Redis。答案生成后的记忆、Trace 和成本写入串行等待，且位于图调用的异常兜底之外。
 - **影响与优先级理由**：记忆过期后可能遗失仍在数据库中的上下文；答案已生成也可能因附属写入失败而无法返回。
 - **代码证据**：[session.py](../../backend/app/memory/session.py) 的 `ENTITY_TTL`、`get_history`、`append_message`；[supervisor.py](../../backend/app/agents/supervisor.py) 的 `load_context`、`run`；[workbench.py](../../backend/app/api/workbench.py) 的 `human_reply`；[conversations.py](../../backend/app/api/conversations.py) 的 `add_customer_message`。
@@ -103,17 +114,22 @@ python -B -m pytest -q -p no:cacheprovider
 - **建议方向（待讨论）**：明确会话事实来源及缓存重建路径；统一消息写入和上下文投影，区分必须提交的业务结果与可恢复的附属写入。
 - **验收条件**：Redis 清空或过期后能恢复允许使用的历史；人工消息进入后续上下文；附属故障不丢失已提交结果，失败可追踪和恢复。
 
+- **2026-10-20 实施与验收**：SQL 消息/实体/版本作为事实来源，Redis v2 投影可重建；客户、AI 与人工消息共用追加入口。附属任务与结果同事务登记，支持消费去重、租期重新领取及失败重试。真实 Redis TTL、清空、坏投影和原子缓存去重，以及 SQL 任务补偿/成本不重复用例通过。 实现基准为 `91b7209` 加本批工作区；完整隔离 **238 passed，零失败/错误/跳过**，前端 **15 passed** 及构建通过。范围和剩余限制见 [第二批验收](pilot-roadmap.md#second-batch-verification)，据此更新为 Resolved；不代表真实浏览器或外部模型已验收。
+
 <a id="arch-005"></a>
 
 ## ARCH-005：会话并发与人工接管缺少协调
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / [ADR-0007（Accepted）](../adr/0007-conversation-execution-fencing.md)。
+- **2026-10-20 起草时进展（后已获准并实施）**：用户选择每会话单轮、额外请求拒绝。数据库租期、代次、接管撤销资格及恢复接口已形成 Proposed，尚未实施或动态验证竞争。
 - **现象**：聊天开始时读取 transferred_to_human，模型调用结束后直接写助手结果；未见提交时重新检查接管状态或会话版本。同会话无服务端轮次串行控制；Redis 实体更新是读、合并、写。
 - **影响与优先级理由**：并发请求可能基于同一旧历史回答或覆盖实体；人工接管期间的在途 AI 仍可能写回。属于待验证的竞争风险，不能据此声称已经发生串话事故。
 - **代码证据**：[chat.py](../../backend/app/api/chat.py) 的 `chat`；[workbench.py](../../backend/app/api/workbench.py) 的 `takeover_conversation`、`human_reply`；[session.py](../../backend/app/memory/session.py) 的 `update_entities`。
 - **验证方式与结论**：源码确认缺少上述协调；并发竞争尚未动态复现。后续可用可控 barrier 暂停模型调用，插入第二轮或人工接管，再释放并检查写回。
 - **建议方向（待讨论）**：明确会话轮次、请求幂等及接管状态迁移，用提交版本检查或合适的协调机制保证顺序；避免在模型调用期间持有长数据库事务。
 - **验收条件**：多标签页并发、重复发送、实体同时更新和中途人工接管均有明确规则；过时 AI 结果不会违反已生效的接管决定。
+
+- **2026-10-20 实施与验收**：同会话单轮占用、执行代次、数据库 UTC 租期与续租及最终版本检查已实现。独立异步 SQL 连接和 barrier 验证处理中同请求 202、新请求 409，不同会话独立占用，以及工作台接管、人工回复、主动转人工反馈均阻止在途 AI 写消息、实体和新工单；租期失效后原消息不重复。 实现基准为 `91b7209` 加本批工作区；完整隔离 **238 passed，零失败/错误/跳过**，前端 **15 passed** 及构建通过。范围和剩余限制见 [第二批验收](pilot-roadmap.md#second-batch-verification)，据此更新为 Resolved；不代表真实浏览器或外部模型已验收。
 
 <a id="arch-006"></a>
 
@@ -211,13 +227,15 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-009：演示时间假设进入运行逻辑
 
-- **状态 / 优先级 / 关联 ADR**：Open / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / 无。
 - **现象**：Key 过期判断固定使用 2026-06-15；两处建单 ID 含同一固定日期。“近 N 分钟”统计以最近 429 或日志为锚点，只设置下界，没有锚点上界。
 - **影响与优先级理由**：接入真实数据后，“当前过期”和“最近调用”可能与用户理解不一致，统计也可能包含锚点之后的其他数据；上线真实诊断前需分离演示与运行语义。
 - **代码证据**：[apikey.py](../../backend/app/tools/apikey.py) 的 `query_apikey_status`；[logs.py](../../backend/app/tools/logs.py) 的 `query_recent_call_stats`；[ticket_tools.py](../../backend/app/tools/ticket_tools.py) 的 `create_ticket`；[tickets.py](../../backend/app/api/tickets.py) 的 `submit_feedback`。
 - **验证方式与结论**：源码确认固定日期及查询范围；真实时间窗口诊断待验证。种子脚本固定数据时间本身不是缺陷。
 - **建议方向（待讨论）**：运行时间与演示时钟分开；明确实时窗口和历史事件窗口，统一时区、上下界与展示含义。
 - **验收条件**：过期边界、跨日与时区、实时和历史窗口均可确定性验证；演示数据可复现且不改变正常运行的时钟语义。
+
+- **2026-10-20 实施与验收**：运行路径统一真实 UTC，无时区 DATETIME 按既有 UTC 约定解释；到期瞬间判过期，工单使用创建时 UTC 日期。统计默认当前窗口，显式本租户调用事件才用历史窗口 `(start, end]`，零调用保留为有效证据。共享建单服务、时间窗口及输入边界的 SQLite/独立 MySQL 回归通过，完整 **238 passed**；详见 [第二批验收](pilot-roadmap.md#second-batch-verification)。此为普通修复，不新增 ADR，据此更新为 Resolved。
 
 <a id="arch-010"></a>
 
@@ -258,6 +276,8 @@ python -B -m pytest -q -p no:cacheprovider
 - **验收条件**：401、服务异常、正常完成、无 done 中断及主动取消均有明确前后端行为；请求可关联到可查询的会话与结果。
 - **2026-10-19 最小修复进展**：[chatStream.ts](../../frontend/src/chatStream.ts) 在读取 body 前检查 HTTP 状态，对 401/403/404/服务异常给出固定错误；聊天页退出等待并展示错误，reader 在结束或异常时释放。保留既有成功接口和事件格式。本批不增加取消、无 done 中断、进度或恢复契约，问题继续处理中。前端 7 项通信测试、类型检查和生产构建通过；这些是函数级替身验证，不是浏览器断网或完整取消契约的证明。
 
+- **2026-10-20 通信补充**：前端识别 202/409，缺少 done 的中断进入待确认状态；保持原 UUID 查询/重试，刷新不保存输入正文。函数级通信和本地状态共 15 项测试及构建通过；仍未做真实浏览器断网、取消及代理故障，保持 In Progress。
+
 <a id="arch-013"></a>
 
 ## ARCH-013：异步请求路径包含同步阻塞调用
@@ -275,6 +295,7 @@ python -B -m pytest -q -p no:cacheprovider
 ## ARCH-014：关键业务不变量缺少持久化回归测试
 
 - **状态 / 优先级 / 关联 ADR**：In Progress / P1 / [ADR-0001（Accepted）](../adr/0001-managed-mysql-migrations.md)、[ADR-0002（Accepted）](../adr/0002-conversation-ticket-access.md)、[ADR-0003（Accepted）](../adr/0003-sensitive-data-boundaries.md)。
+- **2026-10-20 第二批关联**：第二批验收分别见 [ADR-0004](../adr/0004-durable-write-idempotency.md)、[ADR-0005](../adr/0005-agent-outcomes-and-handoff.md)、[ADR-0006](../adr/0006-conversation-source-and-recovery.md)、[ADR-0007](../adr/0007-conversation-execution-fencing.md)，均已获用户接受并授权实施；本批实际验证见后续记录。
 - **基准现象（2026-10-18）**：tests 只有模型 provider 相关的 8 项测试；评估集关注生成结果，不能替代权限、状态一致性、幂等或并发的确定性测试。此前发现的 6 种异常仅做过一次性 mock。
 - **影响与优先级理由**：模型接入测试通过仍无法拦住已确认的业务问题；修复核心边界前后需要可重复的保护。
 - **代码证据**：[test_llm_providers.py](../../backend/tests/test_llm_providers.py) 的 8 个 `test_*`；[run_eval.py](../../backend/eval/run_eval.py) 的 `evaluate`；[pyproject.toml](../../backend/pyproject.toml) 的 pytest 配置。
@@ -287,6 +308,34 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-19 验收补齐**：隔离完整套件实际取得 109 passed、零失败/错误/跳过，补齐上述 MySQL、Make 及既有异步测试的执行缺口，详见 [ARCH-008 完整隔离验收](#arch-008)。本问题继续保持 Open：权限、工具幂等、人工竞争、知识发布失败等其他业务不变量仍需随对应修复补测试，不能由当前套件数量推导已覆盖。
 
 - **2026-10-19 试用第一批覆盖增补**：新增 20 项离线任务保护、36 项隐私边界和 6 项真实 MySQL 测试，后者在测试内部遍历角色/资源/动作矩阵。完整套件实际为 **171 passed，零失败/错误/跳过**；前端另有 7 项通信回归及构建通过，详见 [第一批验收](pilot-roadmap.md#first-batch-verification)。当前已补齐权限、敏感数据边界与评估禁用场景，幂等、恢复、人工竞争、知识发布失败等仍需后续测试，因此保持 In Progress。
+
+- **2026-10-20 第二批覆盖**：完整隔离 **238 passed，零失败/错误/跳过**，包含图结果、幂等、真实 SQL 提交/竞争/恢复及独立 Redis 过期/投影/消费去重；前端另 15 项及构建通过。验收环境、失败修正及证据边界见 [第二批验收](pilot-roadmap.md#second-batch-verification)。ARCH-014 继续 In Progress，知识发布失败等延期能力的不变量仍待对应实施，不能由测试总数推导已经覆盖。
+
+<a id="arch-015"></a>
+
+## ARCH-015：人工回复、直接追加及工作台更新尚未幂等
+
+- **状态 / 优先级**：Open / P2。
+- **2026-10-20 复核证据**：[workbench.py](../../backend/app/api/workbench.py) 的 human_reply、update_ticket、takeover_conversation 与 [conversations.py](../../backend/app/api/conversations.py) 的 add_customer_message 没有客户端幂等标识。消息共享入口保证持久化和执行协调，不提供请求去重；重复请求可能重复消息或审计。接管重复请求也可能重复审计及控制版本递增。
+- **本次处理边界**：确认缺口，单独追踪；本轮修正第二批已有契约的缺陷，不扩展这些公共写接口。ADR-0004 当前覆盖聊天、反馈及可信建单工具，ARCH-003 的 Resolved 仅指该范围，不能宣称“所有写请求均已幂等”。
+- **下一步与验收**：启用依赖网络重试的人工工作台/直接追加流程前，明确这些操作的请求身份、冲突与查询契约，按架构规范决定扩展方案；独立 SQL 验证重复、并发重复、提交后断连仅产生一次消息/更新审计，权限与接管竞争继续成立。
+
+<a id="arch-016"></a>
+
+## ARCH-016：持久化操作及缓存去重记录缺少保留期治理
+
+- **状态 / 优先级**：Open / P2（规模扩大前处理，尚无容量测量）。
+- **2026-10-20 复核证据**：[semantic_cache.py](../../backend/app/cache/semantic_cache.py) 的 semcache:effect 去重标记没有 TTL；操作/任务也没有自动清理。缓存答案列表每租户最多 200 条，不限制这些独立标记的总量。
+- **本次判断**：不采用单独加 TTL 或成功后立即删除。缓存写入成功、任务完成提交前进程异常时会重放任务；受控人工重试也没有最大年龄，去重标记先失效会再次插入缓存。这是现有持久化补偿语义下的容量债务，不把无期限保留称为无风险。
+- **下一步与验收**：容量治理须一起定义操作/任务最大重试年龄、历史结果保留期、Redis 去重生命周期及安全清理机制；在该边界确定前保留现状。验证清理边界、写缓存后故障、长期任务补偿及重放，并测量记录增长。不得仅靠删除标记宣称已解决。
+
+## 2026-10-20 第二批验收报告复核
+
+Claude Code 报告中重复出现的范围及前端项按一个问题处理。确认并修正：超时/管线兜底不携带实体时保留 SQL 事实；聊天、反馈及失败恢复中的 SensitiveDataError 显式上抛；最终提交出口检查生成文本、卡片、引用中的动作话术，以服务端模板表达真实提交结果；人工确认的 ticket_status 与 ticket_id 一致；已关闭/解决的接管单不再复用。新建单及指针更新仍在原事务中完成，不改变 Accepted ADR。
+
+前端对内容冲突保留原操作供查询，移除本次被拒绝的输入和占位，增加需用户明确确认的“开启新对话”。放弃等待只清除本地关联，不取消服务端执行。自动换 UUID 重发旧请求不在本次修复内。标识名称按 [路线中的术语表](pilot-roadmap.md#request-identifiers) 区分。
+
+动作话术检查采用保守规则，命中时替换生成展示内容，可能损失部分诊断文字；它不是任意自然语言的语义证明。真实模型输出、浏览器操作和取消协议仍属准入验证边界。新增持久化回归与本次完整结果见 [复核验收记录](pilot-roadmap.md#second-batch-review)。ARCH-014 继续 In Progress，新增范围和容量缺口不计为已解决。
 
 ## 六个 mock 场景的复核说明
 

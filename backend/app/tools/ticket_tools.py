@@ -3,59 +3,62 @@
 """工单工具（真实写入 MySQL）+ 高风险操作占位（AI 不可直接执行）。"""
 
 import uuid
-from datetime import datetime
 
 from sqlalchemy import select
 
 from app.access import (
-    assert_conversation_access,
     require_identity,
     ticket_read_filter,
     valid_identity,
 )
 from app.db import AsyncSessionLocal
 from app.guardrail import desensitize
-from app.models import Conversation, Ticket
+from app.models import Ticket
 from app.tools.registry import ToolContext, ToolSpec, register
 
 
 async def create_ticket(args: dict, ctx: ToolContext) -> dict:
-    """创建技术支持工单（含 AI 诊断摘要与证据）。"""
+    """独立写工具也必须有服务端操作标识，复用同一持久化建单服务。"""
+    from app import operations, ticket_service, turns
+    from app.conversation_service import locked_conversation
+
     require_identity(ctx)
     if any(key in args and args[key] != value for key, value in (
         ("tenant_id", ctx.tenant_id), ("user_id", ctx.user_id),
     )):
         raise ValueError("工单身份与认证身份不一致")
+    if not ctx.operation_id:
+        raise ValueError("缺少可信操作标识")
+    request_id = uuid.uuid5(uuid.NAMESPACE_URL, ctx.operation_id + ":create_ticket")
+    handle = None
     args = desensitize.desensitize_obj(args)
-    ticket_id = "tk_" + datetime(2026, 6, 15).strftime("%Y%m%d") + "_" + uuid.uuid4().hex[:6]
-    async with AsyncSessionLocal() as s:
-        if args.get("conversation_id") is not None:
-            conv = (await s.execute(select(Conversation).where(
-                Conversation.id == args["conversation_id"],
-            ))).scalar_one_or_none()
-            if conv is None:
-                raise ValueError("关联会话不存在")
-            assert_conversation_access(ctx, conv, write=True)
-        s.add(
-            Ticket(
-                ticket_id=ticket_id,
-                tenant_id=ctx.tenant_id,
-                user_id=ctx.user_id,
-                category=args.get("category", "其它"),
-                priority=args.get("priority", "P2"),
-                status="new",
-                title=args.get("title", "技术支持工单"),
-                summary=args.get("summary", ""),
-                related_request_ids=args.get("related_request_ids", []),
-                related_endpoint=args.get("related_endpoint"),
-                error_code=args.get("error_code"),
-                evidence=args.get("evidence", ""),
-                ai_diagnosis=args.get("ai_diagnosis", ""),
-                conversation_id=args.get("conversation_id"),
-            )
-        )
-        await s.commit()
-    return {"ticket_id": ticket_id, "status": "new", "priority": args.get("priority", "P2")}
+    try:
+        async with AsyncSessionLocal() as db:
+            handle, cached = await operations.receive(db, ctx, "create_ticket", request_id, args)
+            if cached is not None:
+                if cached["operation_status"] != "succeeded":
+                    raise RuntimeError("工单操作仍在处理中")
+                return {key: cached[key] for key in ("ticket_id", "status", "priority")}
+            op = await operations.locked_operation(db, handle.operation_id)
+            conv = await locked_conversation(db, handle.conversation_id) if handle.conversation_id else None
+            now = await operations.db_now(db)
+            if not operations.owns(op, handle, now):
+                raise RuntimeError("工单操作已失效")
+            if conv is not None and conv.active_operation_id and conv.active_operation_id != op.id:
+                # 诊断中的建单只能由最终提交层完成，不能用独立工具绕过执行资格。
+                raise RuntimeError("会话正在处理中")
+            ticket = await ticket_service.create_in_session(db, args, ctx, op.id, conv)
+            op.result = {"ticket_id": ticket.ticket_id, "status": ticket.status, "priority": ticket.priority}
+            op.status, op.lease_until = "succeeded", None
+            result = dict(op.result)
+            await db.commit()
+            return result
+    except Exception:
+        if handle is not None:
+            recovered = await turns.recover_failure(ctx, handle, {"planned_ticket": args})
+            if recovered["operation_status"] == "succeeded":
+                return {key: recovered[key] for key in ("ticket_id", "status", "priority")}
+        raise
 
 
 async def query_ticket(args: dict, ctx: ToolContext) -> dict:
@@ -96,7 +99,7 @@ register(ToolSpec(
         "required": ["title", "category", "summary"],
     },
     func=create_ticket,
-    category="ticket",
+    category="ticket", mutating=True, idempotent=True,
 ))
 register(ToolSpec(
     name="query_ticket",

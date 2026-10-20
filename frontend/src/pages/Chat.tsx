@@ -163,7 +163,11 @@ export default function Chat() {
                 {m.from_cache && <Tag color="gold">缓存命中</Tag>}
                 {m.need_human && <Tag color="volcano">已转人工</Tag>}
                 {m.ticket_id && <Tag color="blue">工单 {m.ticket_id}</Tag>}
-                {m.citations?.map((c: any, j: number) => <Tag key={j}>[{c.index}] {c.doc_title} · {c.section}</Tag>)}
+                {m.citations?.map((c: any, j: number) => <Tag key={j}>
+                  {c.doc_id && c.chunk_id && /^[0-9a-f]{32}$/.test(c.version) ?
+                    <a href={`/docs?doc_id=${encodeURIComponent(c.doc_id)}&knowledge_version=${encodeURIComponent(c.version)}&chunk_id=${encodeURIComponent(c.chunk_id)}`}>[{c.index}] {c.doc_title} · {c.section}（{c.version.slice(0, 8)}）</a> :
+                    <span>[{c.index}] {c.doc_title} · {c.section}（历史未版本化）</span>}
+                </Tag>)}
                 {m.message_id && <Space style={{ marginTop: 8 }}>
                   <Button size="small" disabled={!!pending || sending} onClick={() => feedback("resolved", m.message_id)}>已解决</Button>
                   <Button size="small" disabled={!!pending || sending} onClick={() => feedback("unresolved", m.message_id)}>没解决</Button>

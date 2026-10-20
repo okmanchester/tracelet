@@ -13,9 +13,9 @@ def main(argv: list[str] | None = None) -> None:
     if not args.yes:
         parser.error("演示装载会覆盖业务数据和知识索引，必须指定 --yes")
 
-    for module in ("scripts.init_db", "scripts.seed_data", "scripts.ingest_knowledge"):
+    for module in ("scripts.init_db", "scripts.seed_data", "scripts.setup_demo_knowledge"):
         subprocess.run(
-            [sys.executable, "-m", module],
+            [sys.executable, "-m", module] + (["--yes"] if module == "scripts.setup_demo_knowledge" else []),
             cwd=Path(__file__).resolve().parents[1],
             check=True,
         )

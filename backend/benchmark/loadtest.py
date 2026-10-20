@@ -34,9 +34,11 @@ def _percentile(data: list[float], p: float) -> float:
     return s[k]
 
 
-async def _run_batch(label: str) -> tuple[list[float], list[str]]:
+async def _run_batch(label: str, knowledge_version=None) -> tuple[list[float], list[str]]:
     require_offline_run()
     from app.agents import supervisor
+    from app.knowledge import current_version
+    knowledge_version = knowledge_version or await current_version()
 
     sem = asyncio.Semaphore(CONCURRENCY)
     latencies: list[float] = []
@@ -48,6 +50,7 @@ async def _run_batch(label: str) -> tuple[list[float], list[str]]:
             t0 = time.perf_counter()
             r = await supervisor.run(query=q, tenant_id=tenant, user_id=user,
                                      conversation_id=f"bench_{label}_{idx}", role="customer_dev",
+                                     knowledge_version=knowledge_version,
                                      context={"history": [], "entities": {}})
             dt = time.perf_counter() - t0
             latencies.append(dt)
@@ -88,16 +91,18 @@ async def main() -> None:
     from app.cache import semantic_cache
     from app.cache.redis_client import get_redis
     from app.db import async_engine
+    from app.knowledge import current_version
 
     r = get_redis()
-    await r.delete(semantic_cache.key_for("t_acme"))
+    knowledge_version = await current_version()
+    await r.delete(semantic_cache.key_for("t_acme", knowledge_version))
 
     # 冷启动（缓存空）
-    cold_lat, cold_traces = await _run_batch("冷启动-无缓存")
+    cold_lat, cold_traces = await _run_batch("冷启动-无缓存", knowledge_version)
     await _stage_breakdown(cold_traces)
 
     # 缓存预热后再跑（doc_qa 命中缓存）
-    warm_lat, _ = await _run_batch("缓存预热")
+    warm_lat, _ = await _run_batch("缓存预热", knowledge_version)
 
     p95_cold, p95_warm = _percentile(cold_lat, 95), _percentile(warm_lat, 95)
     print(f"\n==== 优化对比 ====\n  P95: 冷启动 {p95_cold:.2f}s -> 预热 {p95_warm:.2f}s "

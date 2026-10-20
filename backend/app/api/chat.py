@@ -55,7 +55,7 @@ async def guarded_run(actor, handle, message, context):
     model = asyncio.create_task(supervisor.run(
         query=message, tenant_id=actor.tenant_id, user_id=actor.user_id,
         role=actor.role, is_internal=actor.is_internal, conversation_id=handle.conversation_id,
-        operation_id=handle.operation_id, context=context))
+        operation_id=handle.operation_id, context=context, knowledge_version=handle.knowledge_version))
     lost = asyncio.Event()
 
     async def heartbeat():

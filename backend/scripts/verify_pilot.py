@@ -210,11 +210,16 @@ class Pilot:
             if verb == "start":
                 self.compose_run("up", "-d", "--wait", "--wait-timeout", "180", service)
         elif action == "knowledge_recovery":
-            self.stop(self.backend)
+            secondary_port = free_port()
+            secondary = self.child([sys.executable, "-B", "-m", "uvicorn", "app.main:app",
+                                    "--host", "127.0.0.1", "--port", str(secondary_port),
+                                    "--no-access-log"], ROOT / "backend")
             try:
+                self.ready(f"http://127.0.0.1:{secondary_port}/health", secondary)
+                self.env["TRACELET_PILOT_SECOND_API_URL"] = f"http://127.0.0.1:{secondary_port}"
                 self.command([sys.executable, "-B", "-m", "scripts.pilot_fixture", "knowledge-recovery"], ROOT / "backend")
             finally:
-                self.start_backend()
+                self.stop(secondary)
             return json.loads((self.report / "knowledge-recovery.json").read_text(encoding="utf-8"))
         else:
             raise ValueError("unknown action")
@@ -334,6 +339,7 @@ class Pilot:
                 "JWT_SECRET": secrets.token_hex(32), "APP_ENV": "pilot", "EFFECT_WORKER_ENABLED": "true",
                 "TRACELET_PILOT_FRONT_URL": f"http://127.0.0.1:{self.front_port}",
                 "TRACELET_PILOT_CONTROL_URL": proxy + "/__pilot/control",
+                "TRACELET_PILOT_API_URL": f"http://127.0.0.1:{self.backend_port}",
                 "TRACELET_API_PROXY_TARGET": proxy,
                 provider.upper() + "_BASE_URL": proxy + "/__model",
             })
@@ -341,6 +347,8 @@ class Pilot:
             for module, args in (("scripts.migrate_db", ["upgrade"]), ("scripts.migrate_db", ["check"]),
                                  ("scripts.pilot_fixture", ["seed"]), ("scripts.pilot_fixture", ["ingest"])):
                 self.command([sys.executable, "-B", "-m", module, *args], ROOT / "backend", timeout=900)
+            self.announce("验证 2001 切片完整性、尾部召回及检索资源配置（不代表业务容量）")
+            self.command([sys.executable, "-B", "-m", "scripts.pilot_fixture", "knowledge-scale"], ROOT / "backend", timeout=900)
             self.start_backend()
             node = shutil.which("node")
             if not node:

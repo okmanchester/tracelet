@@ -11,22 +11,16 @@ import json
 from app.agents import doc_rag
 from app.agents.outcomes import AgentOutcome
 from app.agents.util import normalize_card, parse_json, render_card
-from app.db import AsyncSessionLocal
 from app.llm import client
 from app.llm.router import model_for
-from app.models import ErrorCode
 from app.tools.registry import ToolContext, execute
 
 
 async def _error_doc_fast(error_code: str):
-    """已知错误码直接查 error_code 表，跳过完整 RAG（性能优化热路径）。"""
-    async with AsyncSessionLocal() as s:
-        row = await s.get(ErrorCode, error_code)
-    if not row:
-        return None
-    answer = f"{row.code}（{row.name}）：{row.cause} 处理步骤：{row.fix_steps}"
-    citations = [{"index": 1, "doc_title": "错误码手册", "section": row.code, "version": "v1", "score": 1.0}]
-    return answer, citations
+    """从本轮不可变知识快照读取错误码章节，省去 embedding/rerank/generate。"""
+    from app.rag.retriever import error_document
+    return await error_document(error_code)
+
 
 
 DiagResult = AgentOutcome

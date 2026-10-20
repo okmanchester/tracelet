@@ -116,8 +116,8 @@ def test_confirmed_demo_runs_steps_in_order(monkeypatch):
     monkeypatch.setattr(setup_demo.subprocess, "run", run)
     setup_demo.main(["--yes"])
     assert [call.args[0] for call in run.call_args_list] == [
-        [sys.executable, "-m", module]
-        for module in ("scripts.init_db", "scripts.seed_data", "scripts.ingest_knowledge")
+        [sys.executable, "-m", module] + (["--yes"] if module == "scripts.setup_demo_knowledge" else [])
+        for module in ("scripts.init_db", "scripts.seed_data", "scripts.setup_demo_knowledge")
     ]
     for invocation in run.call_args_list:
         assert invocation.kwargs == {"cwd": Path(setup_demo.__file__).resolve().parents[1], "check": True}

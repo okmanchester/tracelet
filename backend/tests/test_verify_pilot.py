@@ -1,6 +1,7 @@
 """保护准入入口的隔离边界、失败报告及必需清理。"""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -111,6 +112,32 @@ def test_snapshot_never_accepts_empty_collection_or_manifest():
         pilot_fixture.snapshot_rows(EmptyCollection(), "isolated", ["content"], 1, timeout=0)
     with pytest.raises(RuntimeError, match="清单为空"):
         pilot_fixture.snapshot_rows(EmptyCollection(), "isolated", ["content"], 0)
+
+
+def test_online_failure_drill_requires_validated_nonempty_active_baseline(monkeypatch):
+    from app import db, knowledge
+    from app.rag import store
+
+    release = "a" * 32
+    checked = []
+    class Session:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def get(self, *_args):
+            return SimpleNamespace(release_id=release, generation=1)
+    monkeypatch.setattr(pilot_fixture, "require_isolated", lambda: None)
+    monkeypatch.setattr(db, "SyncSessionLocal", Session)
+    monkeypatch.setattr(knowledge, "release_info", lambda _release: {"collection": "synthetic", "manifest": {"chunks": 66}})
+    monkeypatch.setattr(knowledge, "validate", lambda value, **kwargs: checked.append(value))
+    def empty_snapshot(*_args, **_kwargs):
+        assert checked == [release]
+        return []
+    monkeypatch.setattr(store, "snapshot", empty_snapshot)
+    monkeypatch.setattr(knowledge, "build", lambda *_a, **_kw: pytest.fail("基线未就绪不能开始构建"))
+    with pytest.raises(RuntimeError, match="基线未完整就绪"):
+        pilot_fixture.knowledge_recovery()
 
 
 def test_cleanup_fences_late_helper_or_backend_start(monkeypatch, tmp_path):

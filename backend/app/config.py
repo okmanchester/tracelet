@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     conversation_run_seconds: int = Field(default=300, ge=1)
     cache_timeout_seconds: float = Field(default=1.0, gt=0)
     effect_worker_enabled: bool = True
+    retrieval_workers: int = Field(default=4, ge=1)
+    retrieval_queue_capacity: int = Field(default=8, ge=1)
+    retrieval_bm25_cache_versions: int = Field(default=2, ge=1)
 
     @property
     def mysql_dsn_async(self) -> str:

@@ -11,8 +11,8 @@ from app.rag.ingest import ingest_all
 
 
 def main() -> None:
-    stats = asyncio.run(ingest_all(recreate=True))
-    print(f"[ingest] 完成：文档 {stats['documents']} 篇，切片 {stats['chunks']} 个。")
+    stats = asyncio.run(ingest_all())
+    print(f"[ingest] 已构建 {stats['knowledge_version']}：文档 {stats['documents']} 篇，切片 {stats['chunks']} 个；尚未发布。")
 
 
 if __name__ == "__main__":

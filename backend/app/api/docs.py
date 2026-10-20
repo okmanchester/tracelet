@@ -1,45 +1,42 @@
-# @author: 公众号：IT杨秀才
-# @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
-"""文档中心接口：向已登录用户提供知识资料的脱敏浏览能力。
+"""Authenticated browsing of immutable published knowledge snapshots."""
 
-资料来源为项目根目录 data/knowledge/*.md（与 RAG 检索同一份源）。
-"""
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import get_db
 from app.deps import CurrentUser, get_current_user
 from app.guardrail import desensitize
-from app.rag.ingest import CATEGORY_MAP, KNOWLEDGE_DIR
+from app.knowledge import public_identifier, resolve_version
+from app.models import KnowledgeChunk, KnowledgeSnapshotDocument
 
 router = APIRouter(prefix="/api/docs", tags=["docs"])
 
 
-def _meta(path):
-    """从文件名前缀取 id/分类，从首行 markdown 标题取标题。"""
-    stem = path.stem
-    prefix = stem.split("-")[0]
-    first = path.read_text(encoding="utf-8").splitlines()[0] if path.stat().st_size else stem
-    title = first[2:].strip() if first.startswith("# ") else stem
-    return {
-        "id": prefix,
-        "title": desensitize.desensitize_text(title),
-        "category": CATEGORY_MAP.get(prefix, "其它"),
-        "filename": desensitize.desensitize_text(path.name),
-    }
+def meta(document):
+    return {"id": document.doc_id, "title": document.title, "category": document.category,
+            "filename": document.filename, "knowledge_version": public_identifier(document.release_id)}
 
 
 @router.get("")
-async def list_docs(user: CurrentUser = Depends(get_current_user)) -> dict:
-    files = sorted(KNOWLEDGE_DIR.glob("*.md"))
-    return {"documents": [_meta(f) for f in files]}
+async def list_docs(user: Annotated[CurrentUser, Depends(get_current_user)],
+                    db: Annotated[AsyncSession, Depends(get_db)], knowledge_version: str | None = None):
+    version = await resolve_version(db, knowledge_version)
+    documents = list(await db.scalars(select(KnowledgeSnapshotDocument).where(
+        KnowledgeSnapshotDocument.release_id == version).order_by(KnowledgeSnapshotDocument.doc_id)))
+    return desensitize.desensitize_obj({"knowledge_version": public_identifier(version), "documents": [meta(d) for d in documents]})
 
 
 @router.get("/{doc_id}")
-async def get_doc(doc_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
-    matches = list(KNOWLEDGE_DIR.glob(f"{doc_id}-*.md"))
-    if not matches:
+async def get_doc(doc_id: str, user: Annotated[CurrentUser, Depends(get_current_user)],
+                  db: Annotated[AsyncSession, Depends(get_db)], knowledge_version: str | None = None):
+    version = await resolve_version(db, knowledge_version)
+    document = await db.get(KnowledgeSnapshotDocument, (version, doc_id))
+    if document is None:
         raise HTTPException(404, "文档不存在")
-    path = matches[0]
-    meta = _meta(path)
-    meta["content"] = desensitize.desensitize_text(path.read_text(encoding="utf-8"))
-    return meta
+    chunks = list(await db.scalars(select(KnowledgeChunk).where(KnowledgeChunk.release_id == version,
+                  KnowledgeChunk.doc_id == doc_id).order_by(KnowledgeChunk.position)))
+    return desensitize.desensitize_obj({**meta(document), "content": document.content,
+        "chunks": [{"chunk_id": public_identifier(c.chunk_id, 64), "section": c.section, "content": c.content} for c in chunks]})

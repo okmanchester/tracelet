@@ -8,14 +8,15 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import effects
+from app.conversation_service import append_message, locked_conversation, revoke_ai
 from app.db import get_db
 from app.deps import CurrentUser, require_internal
 from app.guardrail import desensitize
+from app.knowledge import restore_result
 from app.llm import client
 from app.llm.router import model_for
 from app.models import AuditLog, Conversation, Message, Ticket
-from app import effects
-from app.conversation_service import append_message, locked_conversation, revoke_ai
 from app.schemas.chat import TicketUpdateRequest
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench"])
@@ -72,7 +73,7 @@ async def ticket_with_context(
             )
         ).scalars().all()
         messages = [{"role": m.role, "content": desensitize.desensitize_text(m.content),
-                     "meta": desensitize.desensitize_obj(m.meta)} for m in msgs]
+                     "meta": desensitize.desensitize_obj(restore_result(m.meta, m.meta.get("knowledge_version")))} for m in msgs]
     return {
         "ticket": {
             "ticket_id": t.ticket_id, "tenant_id": t.tenant_id, "title": t.title,

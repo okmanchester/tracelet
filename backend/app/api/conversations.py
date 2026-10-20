@@ -6,14 +6,15 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.access import assert_conversation_access, can_write_conversation, conversation_read_filter
 from app import effects
+from app.access import assert_conversation_access, can_write_conversation, conversation_read_filter
 from app.conversation_service import append_message, locked_conversation
-from app.operations import db_now
 from app.db import get_db
 from app.deps import CurrentUser, get_current_user
 from app.guardrail import desensitize
+from app.knowledge import restore_result
 from app.models import Conversation, Message
+from app.operations import db_now
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -58,7 +59,7 @@ async def get_conversation(
                          "satisfaction": conv.satisfaction, "can_write": can_write_conversation(user, conv)},
         "messages": [
             {"id": m.id, "role": m.role, "content": desensitize.desensitize_text(m.content),
-             "meta": desensitize.desensitize_obj(m.meta),
+             "meta": desensitize.desensitize_obj(restore_result(m.meta, m.meta.get("knowledge_version"))),
              "created_at": m.created_at.isoformat()}
             for m in msgs
         ],

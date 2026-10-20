@@ -58,8 +58,11 @@ async def consume(claimed):
             await asyncio.wait_for(route_cache.put(payload["query"], payload["result"]), settings.cache_timeout_seconds)
         elif kind == "semantic_cache":
             from app.cache import semantic_cache
+            if not payload.get("knowledge_version"):
+                raise ValueError("历史答案缓存任务需要维护处理")
             await asyncio.wait_for(semantic_cache.put(payload["tenant_id"], payload["query"], payload["result"],
-                                     payload["embedding"], operation_id=task_id), settings.cache_timeout_seconds)
+                                     payload["embedding"], operation_id=task_id,
+                                     knowledge_version=payload["knowledge_version"]), settings.cache_timeout_seconds)
         async with AsyncSessionLocal() as db:
             task = (await db.execute(select(EffectTask).where(EffectTask.id == task_id)
                 .with_for_update().execution_options(populate_existing=True))).scalar_one()

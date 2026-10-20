@@ -18,6 +18,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.dialects.mysql import DATETIME as MySQLDATETIME
+from sqlalchemy.dialects.mysql import LONGTEXT
 
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -145,6 +146,61 @@ class KnowledgeDocument(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
 
 
+class KnowledgeRelease(Base):
+    __tablename__ = "knowledge_release"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    collection_name: Mapped[str] = mapped_column(String(128), unique=True)
+    status: Mapped[str] = mapped_column(String(16))
+    manifest: Mapped[dict] = mapped_column(JSON, default=dict)
+    validation: Mapped[dict] = mapped_column(JSON, default=dict)
+    error: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime6, default=_now)
+
+
+class KnowledgeSnapshotDocument(Base):
+    __tablename__ = "knowledge_snapshot_document"
+    release_id: Mapped[str] = mapped_column(String(32), ForeignKey("knowledge_release.id"), primary_key=True)
+    doc_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(256))
+    category: Mapped[str] = mapped_column(String(64))
+    filename: Mapped[str] = mapped_column(String(255))
+    content: Mapped[str] = mapped_column(Text().with_variant(LONGTEXT(), "mysql"))
+    digest: Mapped[str] = mapped_column(String(64))
+
+
+class KnowledgeChunk(Base):
+    __tablename__ = "knowledge_chunk_snapshot"
+    release_id: Mapped[str] = mapped_column(String(32), ForeignKey("knowledge_release.id"), primary_key=True)
+    chunk_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    doc_id: Mapped[str] = mapped_column(String(64))
+    position: Mapped[int] = mapped_column(Integer)
+    section: Mapped[str] = mapped_column(String(256))
+    content: Mapped[str] = mapped_column(Text)
+    error_code: Mapped[str] = mapped_column(String(64))
+    digest: Mapped[str] = mapped_column(String(64))
+    vector_digest: Mapped[str] = mapped_column(String(64))
+
+
+class KnowledgeHead(Base):
+    __tablename__ = "knowledge_head"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    release_id: Mapped[str | None] = mapped_column(String(32), ForeignKey("knowledge_release.id"))
+    generation: Mapped[int] = mapped_column(Integer)
+
+
+class KnowledgePublication(Base):
+    __tablename__ = "knowledge_publication"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String(16))
+    release_id: Mapped[str] = mapped_column(String(32), ForeignKey("knowledge_release.id"))
+    previous_release_id: Mapped[str | None] = mapped_column(String(32))
+    previous_generation: Mapped[int] = mapped_column(Integer)
+    generation: Mapped[int] = mapped_column(Integer)
+    operator: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime6, default=_now)
+
+
 # ============ 会话 / 消息 ============
 class Conversation(Base):
     __tablename__ = "conversation"
@@ -185,6 +241,7 @@ class Operation(Base):
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
     user_id: Mapped[str] = mapped_column(String(64))
     kind: Mapped[str] = mapped_column(String(24))
+    knowledge_version: Mapped[str | None] = mapped_column(String(32))
     request_id: Mapped[str] = mapped_column(String(36))
     fingerprint: Mapped[str] = mapped_column(String(64))
     request_payload: Mapped[dict] = mapped_column(JSON, default=dict)

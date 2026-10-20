@@ -12,7 +12,7 @@ from app.models import Feedback, Message, Ticket
 from app.operations import db_now, locked_operation, owns, view
 
 PUBLIC = {"answer", "intent", "confidence", "citations", "card", "trace_id", "total_tokens",
-          "need_clarify", "from_cache"}
+          "need_clarify", "from_cache", "knowledge_version"}
 HUMAN_ACK = "会话已由人工技术支持处理，您的消息已保存，可在会话记录中查看进展。"
 
 
@@ -42,6 +42,11 @@ async def finish(db, actor, handle, draft, feedback=None):
             await db.rollback()
             return result
         draft = desensitize.desensitize_obj(draft)
+        if feedback is None and op.knowledge_version is not None:
+            draft = {**draft, "knowledge_version": desensitize.PublicIdentifier(op.knowledge_version)}
+            task = (draft.get("_effects") or {}).get("semantic_cache")
+            if task is not None and task.get("knowledge_version") != op.knowledge_version:
+                raise ValueError("缓存任务知识版本不匹配")
         result = {key: value for key, value in draft.items() if key in PUBLIC}
         ticket_id = None
         needs_human = bool(draft.get("handoff_requested"))

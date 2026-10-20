@@ -18,7 +18,7 @@ from scripts import migrate_db
 def test_frozen_baseline_matches_current_models_and_preserves_microseconds():
     frozen = metadata()
     assert len(frozen.tables) == 19
-    assert set(migration.current_metadata().tables) == set(frozen.tables) | {"operation", "effect_task"}
+    assert set(migration.current_metadata().tables) == set(frozen.tables) | {"operation", "effect_task", "knowledge_release", "knowledge_snapshot_document", "knowledge_chunk_snapshot", "knowledge_head", "knowledge_publication"}
     assert "context_version" not in frozen.tables["conversation"].c
     assert "sequence" not in frozen.tables["message"].c
     assert frozen.tables["message"].c.created_at.type.fsp == 6
@@ -220,8 +220,8 @@ def test_failed_unlock_invalidates_physical_connection():
 
 
 def test_real_history_is_linear_and_downgrade_is_not_silent():
-    head = "0002_conversation_operations"
-    assert migration._history(migration._configuration(None, None)) == (head, {migration.BASELINE, head})
+    head = "0003_knowledge_releases"
+    assert migration._history(migration._configuration(None, None)) == (head, {migration.BASELINE, "0002_conversation_operations", head})
     revision = importlib.import_module("migrations.versions.0001_initial_schema")
     with pytest.raises(RuntimeError, match="删除业务数据"):
         revision.downgrade()

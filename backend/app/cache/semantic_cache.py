@@ -20,13 +20,16 @@ from app.llm.registry import get_embedding_provider
 MAX_ENTRIES = 200
 
 
-def key_for(tenant_id: str) -> str:
+def key_for(tenant_id: str, knowledge_version: str | None = None) -> str:
     """缓存 key 带 embedding 指纹，切换模型后旧向量自动隔离。"""
-    return f"semcache:{get_embedding_provider().fingerprint}:{tenant_id}"
+    from app.rag.execution import current
+    context = current.get()
+    knowledge_version = knowledge_version or (context.version if context else None)
+    return f"semcache:{get_embedding_provider().fingerprint}:{knowledge_version or 'unversioned'}:{tenant_id}"
 
 
-def _key(tenant_id: str) -> str:
-    return key_for(tenant_id)
+def _key(tenant_id: str, knowledge_version=None) -> str:
+    return key_for(tenant_id, knowledge_version)
 
 
 async def clear_all() -> int:
@@ -53,7 +56,10 @@ async def get(tenant_id: str, query: str) -> tuple[dict | None, list[float]]:
     qa = np.array(qv)
     best, best_sim = None, -1.0
     for item in raw:
-        e = desensitize.desensitize_obj(json.loads(item))
+        from app.knowledge import restore_result
+        from app.rag.execution import current
+        context = current.get()
+        e = desensitize.desensitize_obj(restore_result(json.loads(item), context.version if context else None))
         sim = _cosine(qa, np.array(e["embedding"]))
         if sim > best_sim:
             best_sim, best = sim, e
@@ -72,8 +78,11 @@ async def get(tenant_id: str, query: str) -> tuple[dict | None, list[float]]:
 
 
 async def put(tenant_id: str, query: str, result: dict, embedding: list[float],
-              *, operation_id: str | None = None) -> None:
+              *, operation_id: str | None = None, knowledge_version: str | None = None) -> None:
     r = get_redis()
+    if knowledge_version:
+        from app.knowledge import restore_result
+        result = restore_result(result, knowledge_version)
     entry = json.dumps(
         desensitize.desensitize_obj({
             "query": query,
@@ -91,8 +100,8 @@ async def put(tenant_id: str, query: str, result: dict, embedding: list[float],
             redis.call('LPUSH', KEYS[1], ARGV[1])
             redis.call('LTRIM', KEYS[1], 0, ARGV[2])
             return 1
-        """, 2, _key(tenant_id), f"semcache:effect:{operation_id}", entry, MAX_ENTRIES - 1)
+        """, 2, _key(tenant_id, knowledge_version), f"semcache:effect:{operation_id}", entry, MAX_ENTRIES - 1)
         return
-    await r.lpush(_key(tenant_id), entry)
+    await r.lpush(_key(tenant_id, knowledge_version), entry)
     # 按租户保留最新 MAX_ENTRIES 条，近似 LRU 防止缓存无限膨胀
-    await r.ltrim(_key(tenant_id), 0, MAX_ENTRIES - 1)
+    await r.ltrim(_key(tenant_id, knowledge_version), 0, MAX_ENTRIES - 1)

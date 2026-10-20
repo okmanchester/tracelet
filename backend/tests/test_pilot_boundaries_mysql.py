@@ -35,6 +35,8 @@ def pilot_store(mysql_engine, monkeypatch):
     # sse-starlette 2.x 的退出事件不能跨 pytest 的独立事件循环复用。
     monkeypatch.setattr(AppStatus, "should_exit_event", None)
     Base.metadata.create_all(mysql_engine)
+    from conftest import seed_knowledge
+    seed_knowledge(mysql_engine, monkeypatch)
     with Session(mysql_engine) as session:
         session.add_all(models.Tenant(id=tenant, name=tenant) for tenant in ("a", "b", "internal"))
         session.flush()

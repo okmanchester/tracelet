@@ -85,6 +85,8 @@ Accepted 表示选择获准，不表示已经实施或问题已解决。实施�
 | [0005](0005-agent-outcomes-and-handoff.md) | 集中决策 Agent 结果、建单与人工接管 | Accepted | 2026-10-20 | [ARCH-002](../architecture/known-issues.md#arch-002)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 | [0006](0006-conversation-source-and-recovery.md) | 以 MySQL 为会话事实来源并恢复附属写入 | Accepted | 2026-10-20 | [ARCH-004](../architecture/known-issues.md#arch-004)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 | [0007](0007-conversation-execution-fencing.md) | 以数据库执行租期和版本校验协调会话与接管 | Accepted | 2026-10-20 | [ARCH-005](../architecture/known-issues.md#arch-005)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
+| [0008](0008-versioned-knowledge-publication.md) | 以不可变知识版本与 MySQL 生效指针协调在线发布 | Accepted | 2026-10-20 | [ARCH-007](../architecture/known-issues.md#arch-007)、[ARCH-014](../architecture/known-issues.md#arch-014)、[ARCH-016](../architecture/known-issues.md#arch-016) | 无 |
+| [0009](0009-bounded-retrieval-execution.md) | 以有界工作队列隔离检索路径的同步阻塞调用 | Accepted | 2026-10-20 | [ARCH-013](../architecture/known-issues.md#arch-013)、[ARCH-014](../architecture/known-issues.md#arch-014) | 无 |
 
 ## 模板来源
 

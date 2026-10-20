@@ -15,7 +15,7 @@ from app.access import assert_conversation_access, require_identity
 from app.config import settings
 from app.conversation_service import append_message, locked_conversation
 from app.guardrail import desensitize
-from app.models import Conversation, EffectTask, Operation
+from app.models import Conversation, EffectTask, KnowledgeHead, Operation
 
 
 def identity(actor, kind, request_id):
@@ -33,11 +33,12 @@ async def locked_operation(db, operation_id):
 
 
 def view(op, *, can_retry=False):
+    from app.knowledge import restore_result
     return desensitize.desensitize_obj({
         "request_id": op.request_id, "operation_status": op.status,
         "operation_id": "op_" + op.id,
         "conversation_id": op.conversation_id, "can_retry": can_retry,
-        **(op.result or {}),
+        **restore_result(op.result or {}, op.knowledge_version),
     })
 
 
@@ -50,6 +51,7 @@ class Execution:
     user_message_id: str | None
     control_version: int
     draft: dict
+    knowledge_version: str | None = None
 
 
 async def receive(db, actor, kind, request_id, payload):
@@ -103,6 +105,17 @@ async def receive(db, actor, kind, request_id, payload):
                             user_id=actor.user_id, context_version=0, control_version=0)
         db.add(conv)
         await db.flush()
+    if kind == "chat" and not conv.transferred_to_human:
+        if op.generation == 0:
+            head = (await db.execute(select(KnowledgeHead).where(KnowledgeHead.id == 1)
+                                    .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+            if head is None or head.release_id is None:
+                await db.rollback()
+                raise HTTPException(503, "知识服务尚未就绪")
+            op.knowledge_version = head.release_id
+        elif op.knowledge_version is None:
+            await db.rollback()
+            raise HTTPException(409, "历史操作尚未版本化，请按维护流程处理原操作")
     op.conversation_id = conv.id if conv else None
     if kind == "chat" and not op.user_message_id:
         op.user_message_id = append_message(db, conv, "user", payload["message"]).id
@@ -116,7 +129,14 @@ async def receive(db, actor, kind, request_id, payload):
         conv.active_operation_id = op.id
         conv.lease_until = op.lease_until
     handle = Execution(op.id, op.owner_token, op.generation, op.conversation_id,
-                       op.user_message_id, op.control_version, op.draft or {})
+                       op.user_message_id, op.control_version, op.draft or {}, op.knowledge_version)
+    if handle.draft and op.knowledge_version:
+        from app.knowledge import restore_result
+        handle.draft.update(restore_result(handle.draft, op.knowledge_version))
+        cache = handle.draft.get("_effects", {}).get("semantic_cache")
+        if cache and cache.get("knowledge_version") == op.knowledge_version:
+            cache["knowledge_version"] = desensitize.PublicIdentifier(op.knowledge_version)
+            cache["result"] = restore_result(cache["result"], op.knowledge_version)
     await db.commit()
     return handle, None
 

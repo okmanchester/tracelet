@@ -37,6 +37,8 @@ def build_context(chunks: list[dict]) -> tuple[str, list[dict]]:
                 "doc_title": c["doc_title"],
                 "section": c["section"],
                 "version": c.get("version", "v1"),
+                "doc_id": c.get("doc_id"),
+                "chunk_id": c.get("chunk_id"),
                 "score": round(c.get("rerank_score", 0.0), 3),
             }
         )

@@ -25,6 +25,8 @@ logger = logging.getLogger("devsupport")
 @asynccontextmanager
 async def lifespan(_app):
     from app.effects import worker
+    from app.rag import execution
+    execution.pool()
     task = asyncio.create_task(worker()) if settings.effect_worker_enabled else None
     try:
         yield
@@ -33,6 +35,7 @@ async def lifespan(_app):
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        await execution.close()
 
 
 app = FastAPI(

@@ -8,7 +8,7 @@ from app import schema_migrations as migration
 from app.db import Base
 from migrations.baseline import metadata
 
-HEAD = "0002_conversation_operations"
+HEAD = "0003_knowledge_releases"
 
 
 def seed_and_snapshot(engine):
@@ -33,7 +33,7 @@ def snapshot(engine):
 
 def version(engine):
     with engine.connect() as connection:
-        return migration._revision(connection, {migration.BASELINE, HEAD, "0003_trial"})
+        return migration._revision(connection, {migration.BASELINE, HEAD, "0004_trial"})
 
 
 def test_legacy_adoption_and_repeated_upgrade_preserve_data(mysql_engine):
@@ -145,13 +145,13 @@ def test_incremental_revision_preserves_rows_and_exposes_nontransactional_failur
     shutil.copytree(migration.BACKEND / "migrations", directory, ignore=shutil.ignore_patterns("__pycache__"))
     source = (
         "from alembic import op\nimport sqlalchemy as sa\n"
-        "revision='0003_trial'\ndown_revision='0002_conversation_operations'\n"
+        "revision='0004_trial'\ndown_revision='0003_knowledge_releases'\n"
         "def upgrade():\n"
         "    op.add_column('conversation', sa.Column('trial_note', sa.String(32), nullable=True))\n"
     )
     if fail_midway:
         source += "    raise RuntimeError('synthetic failure after DDL')\n"
-    (directory / "versions" / "0003_trial.py").write_text(source, encoding="utf-8")
+    (directory / "versions" / "0004_trial.py").write_text(source, encoding="utf-8")
     expected = sa.MetaData()
     for table in Base.metadata.tables.values():
         table.to_metadata(expected)
@@ -165,5 +165,5 @@ def test_incremental_revision_preserves_rows_and_exposes_nontransactional_failur
     else:
         migration.migrate(mysql_engine, script_location=directory)
         migration.migrate(mysql_engine, script_location=directory)
-        assert version(mysql_engine) == "0003_trial"
+        assert version(mysql_engine) == "0004_trial"
     assert snapshot(mysql_engine) == before

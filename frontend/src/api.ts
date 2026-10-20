@@ -51,8 +51,8 @@ export const wbTicketDetail = (id: string) => api.get(`/workbench/tickets/${id}`
 export const wbUpdateTicket = (id: string, body: any) => api.post(`/workbench/tickets/${id}`, body).then((r) => r.data);
 export const wbSuggestReply = (convId: string) => api.get(`/workbench/conversations/${convId}/suggest_reply`).then((r) => r.data);
 export const wbReply = (convId: string, content: string) => api.post(`/workbench/conversations/${convId}/reply`, { content }).then((r) => r.data);
-export const listDocs = () => api.get("/docs").then((r) => r.data);
-export const getDoc = (id: string) => api.get(`/docs/${id}`).then((r) => r.data);
+export const listDocs = (version?: string) => api.get("/docs", { params: { knowledge_version: version } }).then((r) => r.data);
+export const getDoc = (id: string, version?: string) => api.get(`/docs/${encodeURIComponent(id)}`, { params: { knowledge_version: version } }).then((r) => r.data);
 export const getTrace = (id: string) => api.get(`/traces/${id}`).then((r) => r.data);
 export const getMetrics = () => api.get("/metrics").then((r) => r.data);
 

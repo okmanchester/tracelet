@@ -93,7 +93,7 @@ async def test_rerank_delegates_to_provider(monkeypatch):
 
 def test_semantic_cache_key_contains_embedding_fingerprint(monkeypatch):
     monkeypatch.setattr(settings, "embedding_provider", "fake_embedding")
-    assert semantic_cache.key_for("t1") == "semcache:fake:model:v1:t1"
+    assert semantic_cache.key_for("t1") == "semcache:fake:model:v1:unversioned:t1"
 
 
 async def test_missing_api_key_raises_configuration_error():

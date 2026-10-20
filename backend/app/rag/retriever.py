@@ -1,84 +1,103 @@
-# @author: 公众号：IT杨秀才
-# @doc: 后端，AI Agent知识进阶，后端、AI大模型、场景题面试大全：https://golangstar.cn/
-"""混合检索：向量检索 + BM25 关键词检索 → RRF 融合。
+"""Version-pinned vector/BM25 retrieval with bounded synchronous work."""
 
-错误码类问题支持对 error_code 标量字段精确过滤召回。
-"""
+import asyncio
+import json
+import time
+from collections import OrderedDict
 
 import jieba
 from rank_bm25 import BM25Okapi
 
+from app import knowledge
+from app.config import settings
 from app.llm import client
-from app.rag import store
+from app.rag import execution, store
 
-_bm25: BM25Okapi | None = None
-_corpus: list[dict] = []
+_indexes = OrderedDict()
 
 
-def _tokenize(text: str) -> list[str]:
+def _tokenize(text):
     return [t for t in jieba.lcut(text.lower()) if t.strip()]
 
 
-def _ensure_bm25() -> None:
-    """懒加载并缓存 BM25 索引（基于 Milvus 中全部切片）。"""
-    global _bm25, _corpus
-    if _bm25 is not None:
-        return
-    _corpus = store.all_chunks()
-    if _corpus:
-        _bm25 = BM25Okapi([_tokenize(c["content"]) for c in _corpus])
+def reset_bm25():
+    _indexes.clear()
 
 
-def reset_bm25() -> None:
-    """ingest 后调用，强制重建 BM25。"""
-    global _bm25, _corpus
-    _bm25, _corpus = None, []
+def _build_index(release_id):
+    info = knowledge.release_info(release_id, include_chunks=True)
+    return info, BM25Okapi([_tokenize(c["content"]) for c in info["chunks"]])
 
 
-def _rrf_fuse(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
-    """Reciprocal Rank Fusion：输入多个有序 id 列表，输出融合分。"""
-    scores: dict[str, float] = {}
+async def get_index(release_id):
+    if release_id in _indexes:
+        _indexes.move_to_end(release_id)
+        return _indexes[release_id]
+    loop = asyncio.get_running_loop()
+    pending = getattr(loop, "_tracelet_bm25_pending", None)
+    if pending is None:
+        pending = loop._tracelet_bm25_pending = {}
+    if release_id not in pending:
+        async def build():
+            try:
+                result = await execution.run(lambda: _build_index(release_id), phase="bm25_build")
+                _indexes[release_id] = result
+                while len(_indexes) > settings.retrieval_bm25_cache_versions:
+                    _indexes.popitem(last=False)
+                return result
+            finally:
+                pending.pop(release_id, None)
+        task = pending[release_id] = asyncio.create_task(build())
+        task.add_done_callback(lambda done: done.exception() if not done.cancelled() else None)
+    context = execution.current.get()
+    timeout = max(0, context.deadline-time.monotonic()) if context else settings.conversation_run_seconds
+    return await asyncio.wait_for(asyncio.shield(pending[release_id]), timeout)
+
+
+def _rrf_fuse(rankings, k=60):
+    scores = {}
     for ranking in rankings:
-        for rank, doc_id in enumerate(ranking):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank + 1)
+        for rank, chunk_id in enumerate(ranking, 1):
+            scores[chunk_id] = scores.get(chunk_id, 0) + 1 / (k + rank)
     return scores
 
 
-async def hybrid_search(
-    query: str, top_k_each: int = 20, error_code: str | None = None
-) -> tuple[list[dict], float]:
-    """混合召回，返回 (候选片段, 最高向量余弦)。向量余弦用于更稳健的无命中判定。"""
-    _ensure_bm25()
-
-    # 1) 向量检索
-    qvec = await client.embed_query(query)
-    expr = f'error_code == "{error_code}"' if error_code else None
-    vec_hits = store.search(qvec, top_k=top_k_each, expr=expr)
-    # 错误码精确过滤若无结果，退回全量向量检索
+def _search(index, query, qvec, top_k_each, error_code):
+    info, bm25 = index
+    expr = "error_code == " + json.dumps(error_code, ensure_ascii=False) if error_code else None
+    vec_hits = store.search(qvec, top_k=top_k_each, expr=expr, collection_name=info["collection"])
     if error_code and not vec_hits:
-        vec_hits = store.search(qvec, top_k=top_k_each)
+        vec_hits = store.search(qvec, top_k=top_k_each, collection_name=info["collection"])
+    if not vec_hits:
+        raise knowledge.KnowledgeError("knowledge_vector_unavailable")
+    if any(h["version"] != info["version"] or not h.get("chunk_id") for h in vec_hits):
+        raise knowledge.KnowledgeError("knowledge_vector_version_mismatch")
+    snapshots = {c["chunk_id"]: c for c in info["chunks"]}
+    for hit in vec_hits:
+        original = snapshots.get(hit["chunk_id"])
+        if original is None or any(hit.get(key) != original[key] for key in original):
+            raise knowledge.KnowledgeError("knowledge_vector_content_mismatch")
+        hit["version"], hit["chunk_id"] = original["version"], original["chunk_id"]
+    scores = bm25.get_scores(_tokenize(query))
+    positions = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k_each]
+    bm25_hits = [info["chunks"][i] for i in positions if scores[i] > 0]
+    by_id = {h["chunk_id"]: h for h in bm25_hits}
+    by_id.update({h["chunk_id"]: h for h in vec_hits})
+    fused = _rrf_fuse([[h["chunk_id"] for h in hits] for hits in (vec_hits, bm25_hits)])
+    return ([{**by_id[key], "rrf_score": score} for key, score in sorted(fused.items(), key=lambda kv: kv[1], reverse=True)],
+            max(h["score"] for h in vec_hits))
 
-    # 2) BM25 关键词检索
-    bm25_hits: list[dict] = []
-    if _bm25 is not None and _corpus:
-        scores = _bm25.get_scores(_tokenize(query))
-        top_idx = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:top_k_each]
-        bm25_hits = [_corpus[i] for i in top_idx if scores[i] > 0]
 
-    # 用 content 作为去重/融合 key；vec_hits 在前，同片段优先保留向量检索的元信息
-    by_content: dict[str, dict] = {}
-    for h in vec_hits + bm25_hits:
-        by_content.setdefault(h["content"], h)
+async def hybrid_search(query, top_k_each=20, error_code=None):
+    index = await get_index(execution.version())
+    qvec = await client.embed_query(query)
+    return await execution.run(lambda: _search(index, query, qvec, top_k_each, error_code), phase="hybrid_search")
 
-    vec_order = [h["content"] for h in vec_hits]
-    bm25_order = [h["content"] for h in bm25_hits]
-    rrf = _rrf_fuse([vec_order, bm25_order])
 
-    candidates = []
-    for content, score in sorted(rrf.items(), key=lambda x: x[1], reverse=True):
-        item = dict(by_content[content])
-        item["rrf_score"] = score
-        candidates.append(item)
-
-    top_vec = max((h["score"] for h in vec_hits), default=0.0)
-    return candidates, top_vec
+async def error_document(error_code):
+    from app.rag.compressor import build_context
+    index = await get_index(execution.version())
+    chunks = [c for c in index[0]["chunks"] if c["error_code"] == error_code]
+    if not chunks:
+        return None
+    return build_context(chunks)

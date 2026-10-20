@@ -10,6 +10,10 @@ class SensitiveDataError(RuntimeError):
         super().__init__("内容安全处理失败")
 
 
+class PublicIdentifier(str):
+    """Server-created identifier from an authoritative record, never a field-name exemption."""
+
+
 # 凭证完全替换，避免短密钥的首尾片段合起来暴露完整值。
 # 字母/数字/下划线边界避免把 req_<hex> 等业务 ID 的片段当完整签名。
 _PATTERNS: list[tuple[str, re.Pattern]] = [
@@ -64,6 +68,8 @@ def desensitize_text(text: str) -> str:
 
 
 def _clean(obj, *, mask_fields=True):
+    if isinstance(obj, PublicIdentifier):
+        return obj
     if isinstance(obj, str):
         return desensitize_text(obj)
     if isinstance(obj, dict):

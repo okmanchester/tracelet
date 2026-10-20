@@ -8,6 +8,12 @@
 
 2026-10-20 第三批按用户确认的“停止等待并保留查询、Chromium 自动化”完成：完整隔离后端 **272 passed**、前端 **26 passed**、真实依赖 Chromium **15 passed**，均零失败/错误/跳过。入口和证据解释见 [准入验收说明](pilot-acceptance.md)，实际执行结果见 [第三批记录](pilot-roadmap.md#third-batch-verification)。满足本轮合成数据、本机独立环境的准入条件，可进入受限小范围试用部署准备；本轮没有部署或开放真实用户。完整服务端取消仍延期，ARCH-012、014 保持 In Progress。
 
+2026-10-20 下一阶段按用户选择先补系统演进能力，形成 [演进路线](evolution-roadmap.md)及 [ADR-0008（Proposed）](../adr/0008-versioned-knowledge-publication.md)、[ADR-0009（Proposed）](../adr/0009-bounded-retrieval-execution.md)：优先规划知识在线发布与回退、单轮固定版本及检索有界执行，随后推进独立评估、写接口与保留期治理、完整取消与容量治理。本轮为规划落盘及隔离原型实验，不部署；原问题状态保持不变，不能视为新方案已被接受、实现或验收。
+
+2026-10-20 后续决定：用户明确接受 ADR-0008、ADR-0009 并要求开始执行，已登记 Accepted；ARCH-007、013 进入 In Progress。业务实现和当前验收进展见 [演进路线](evolution-roadmap.md)，不能把接受决策视为问题已经解决。
+
+2026-10-20 首批演进验收：隔离后端 **302 passed**、前端 **26 passed**、真实依赖与 Chromium **16 passed**，均零失败/错误/跳过，专用资源清理成功。知识在线发布、回退、每轮固定版本及历史引用取得 [限定范围的完整证据](evolution-roadmap.md#真实依赖及-chromium-验收)，ARCH-007 为 Resolved；ARCH-013、014 继续 In Progress。未部署或迁移业务环境，后续阶段及容量/生命周期边界不变。
+
 ## 检查基准与证据边界
 
 - 检查日期：2026-10-18（Asia/Shanghai）。
@@ -46,16 +52,16 @@ python -B -m pytest -q -p no:cacheprovider
 | [ARCH-004](#arch-004) | 会话记忆与持久化记录缺少恢复边界 | P1 | Resolved | [0006（Accepted）](../adr/0006-conversation-source-and-recovery.md) |
 | [ARCH-005](#arch-005) | 会话并发与人工接管缺少协调 | P1 | Resolved | [0007（Accepted）](../adr/0007-conversation-execution-fencing.md) |
 | [ARCH-006](#arch-006) | 脱敏未覆盖输入、存储与全部出口 | P1 | Resolved | [0003（Accepted）](../adr/0003-sensitive-data-boundaries.md) |
-| [ARCH-007](#arch-007) | 知识库发布与缓存版本不一致 | P1 | Deferred | 无 |
+| [ARCH-007](#arch-007) | 知识库发布与缓存版本不一致 | P1 | Resolved | [0008（Accepted）](../adr/0008-versioned-knowledge-publication.md) |
 | [ARCH-008](#arch-008) | 初始化默认删表且缺少增量迁移 | P0 | Resolved | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md) |
 | [ARCH-009](#arch-009) | 演示时间假设进入运行逻辑 | P1 | Resolved | 无 |
 | [ARCH-010](#arch-010) | 金额和单价使用浮点类型 | P2 | Deferred | 无 |
 | [ARCH-011](#arch-011) | 评估与业务数据、缓存未隔离 | P1 | Deferred | 无 |
 | [ARCH-012](#arch-012) | 对话通信缺少完整的失败与取消语义 | P2 | In Progress | 无 |
-| [ARCH-013](#arch-013) | 异步请求路径包含同步阻塞调用 | P2 | Open | 无 |
-| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | In Progress | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md)、[0002（Accepted）](../adr/0002-conversation-ticket-access.md)、[0003（Accepted）](../adr/0003-sensitive-data-boundaries.md)、[0004（Accepted）](../adr/0004-durable-write-idempotency.md)、[0005（Accepted）](../adr/0005-agent-outcomes-and-handoff.md)、[0006（Accepted）](../adr/0006-conversation-source-and-recovery.md)、[0007（Accepted）](../adr/0007-conversation-execution-fencing.md) |
+| [ARCH-013](#arch-013) | 异步请求路径包含同步阻塞调用 | P2 | In Progress | [0009（Accepted）](../adr/0009-bounded-retrieval-execution.md) |
+| [ARCH-014](#arch-014) | 关键业务不变量缺少持久化回归测试 | P1 | In Progress | [0001（Accepted）](../adr/0001-managed-mysql-migrations.md)、[0002（Accepted）](../adr/0002-conversation-ticket-access.md)、[0003（Accepted）](../adr/0003-sensitive-data-boundaries.md)、[0004（Accepted）](../adr/0004-durable-write-idempotency.md)、[0005（Accepted）](../adr/0005-agent-outcomes-and-handoff.md)、[0006（Accepted）](../adr/0006-conversation-source-and-recovery.md)、[0007（Accepted）](../adr/0007-conversation-execution-fencing.md)、[0008（Accepted）](../adr/0008-versioned-knowledge-publication.md)、[0009（Accepted）](../adr/0009-bounded-retrieval-execution.md) |
 | [ARCH-015](#arch-015) | 人工回复、直接追加及工作台更新尚未幂等 | P2 | Open | [0004（范围参照）](../adr/0004-durable-write-idempotency.md) |
-| [ARCH-016](#arch-016) | 持久化操作及缓存去重记录缺少保留期治理 | P2 | Open | [0004](../adr/0004-durable-write-idempotency.md)、[0006](../adr/0006-conversation-source-and-recovery.md) |
+| [ARCH-016](#arch-016) | 持久化操作及缓存去重记录缺少保留期治理 | P2 | Open | [0004](../adr/0004-durable-write-idempotency.md)、[0006](../adr/0006-conversation-source-and-recovery.md)、[0008（Accepted）](../adr/0008-versioned-knowledge-publication.md) |
 
 <a id="arch-001"></a>
 
@@ -155,7 +161,7 @@ python -B -m pytest -q -p no:cacheprovider
 
 ## ARCH-007：知识库发布与缓存版本不一致
 
-- **状态 / 优先级 / 关联 ADR**：Deferred / P1 / 无。
+- **状态 / 优先级 / 关联 ADR**：Resolved / P1 / [ADR-0008（Accepted）](../adr/0008-versioned-knowledge-publication.md)。
 - **现象**：全量 ingest 预热 embedding 后删除旧 collection，再逐篇生成及写入，最后登记 MySQL 元信息。BM25 是常驻进程缓存，`reset_bm25` 未见调用；语义缓存键只有 embedding 指纹与租户，没有知识库版本或过期设置；文档中心直接读取 Markdown。
 - **影响与优先级理由**：中途失败可能留下部分索引；文档、向量、关键词索引和答案缓存可能引用不同版本。BM25 数据读取还默认限于 2000 条，不能保证扩容后完整。
 - **代码证据**：[ingest.py](../../backend/app/rag/ingest.py) 的 `ingest_all`；[store.py](../../backend/app/rag/store.py) 的 `ensure_collection`、`all_chunks`；[retriever.py](../../backend/app/rag/retriever.py) 的 `_ensure_bm25`、`reset_bm25`；[semantic_cache.py](../../backend/app/cache/semantic_cache.py) 的 `key_for`、`put`；[docs.py](../../backend/app/api/docs.py) 的 `get_doc`。
@@ -163,6 +169,9 @@ python -B -m pytest -q -p no:cacheprovider
 - **建议方向（待讨论）**：构建、校验新知识版本后再发布；统一向量、关键词、文档展示、引用与答案缓存的版本，支持失败保留旧版和回退。
 - **验收条件**：构建失败不损坏生效知识；发布后所有 worker 及缓存版本一致；引用可定位对应版本；大于默认条数时关键词索引仍完整。
 - **2026-10-19 延期决定依据与重评**：用户要求实施的 [试用路线](pilot-roadmap.md) 限定固定知识，更新采用停服、重建与恢复验收，在线版本发布安排在试用后。需要不停服更新、动态跨 worker 切换或超过当前索引读取边界时须先重评；该限制未修复现有重建失败风险，不标记 Resolved。
+- **2026-10-20 重评与提案**：用户选择先补演进能力、首批知识在线发布，已起草 ADR-0008，推荐不可变 SQL 文档/切片快照、独立 Milvus 集合、生效指针短事务、原操作/缓存任务固定版本和可定位历史引用。CLI 发布与回退、故障及双进程/2001 切片验收已拆入 [首批任务](evolution-roadmap.md#第一阶段实施任务)。本轮仅规划，状态保持 Deferred；提案获准且完成实现/验收前继续按现有维护窗口操作。
+- **新提案的验收解释**：所有 worker 的新接收轮次应使用同一生效指针；已绑定旧版的在途请求和任务允许按旧版完成，缓存以版本隔离。验收须断言每轮一致及新请求切换，不能要求发布时抹掉仍被使用的历史版本。
+- **2026-10-20 实施与验收**：已实现不可变 SQL 快照/独占集合、完整校验、SQL CAS 发布与回退、固定操作版本及缓存命名空间、历史文档与引用、运维 CLI；新增 0003 revision，不改旧迁移。隔离后端 302、前端 26、完整真实依赖 Chromium 16 项通过并清理；包含真实子进程提交前后退出、双进程在线切版/回退、原 UUID 重放、真实 Redis 迟到任务和 2001 切片完整性。具体代码、报告、故障修正及证据边界见 [首批实施记录](evolution-roadmap.md#2026-10-20-首批实施记录)。本问题在该范围登记 Resolved；首次业务接入仍需维护窗口，历史保留与容量由 ARCH-016 后续治理。
 
 <a id="arch-008"></a>
 
@@ -266,6 +275,7 @@ python -B -m pytest -q -p no:cacheprovider
 - **建议方向（待讨论）**：独立评估依赖或命名空间，按运行 ID 区分记忆和结果；明确是否允许真实写工具及清理范围。
 - **验收条件**：连续及并发评估不清理业务缓存、不写业务工单；每轮初始条件可控，结果能关联数据集版本和独立运行 ID。
 - **2026-10-19 延期决定依据与临时防护**：用户要求实施的 [试用路线](pilot-roadmap.md) 将完整评估隔离安排在恢复评估能力之前。当前工作区在 [offline_runs.py](../../backend/app/offline_runs.py) 集中限制执行环境：仅 dev/test/eval 允许，pilot、production 及未知环境拒绝；HTTP、evaluate 函数、评估 CLI 和压测入口在业务依赖加载与副作用前检查。指标查询保留，并返回能力信息供页面隐藏评估入口。允许执行的环境仍可能共用依赖，必须使用独立数据；未完成运行 ID 和独立依赖设计，因此保持 Deferred，不能视为 Resolved。20 项离线任务保护测试已通过，包含拒绝前不加载业务依赖、CLI 非零退出、HTTP 拒绝及只读指标能力；完整结果见 [第一批验收](pilot-roadmap.md#first-batch-verification)。
+- **2026-10-20 下一阶段顺序**：[演进路线](evolution-roadmap.md#阶段与依赖)将完整隔离列为知识版本治理之后的第二阶段，固定知识/数据集/模型配置并隔离每轮依赖与运行 ID；当前执行限制继续有效，本轮不恢复评估入口。
 
 <a id="arch-012"></a>
 
@@ -283,18 +293,21 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-20 通信补充**：前端识别 202/409，缺少 done 的中断进入待确认状态；保持原 UUID 查询/重试，刷新不保存输入正文。函数级通信和本地状态共 15 项测试及构建通过；仍未做真实浏览器断网、取消及代理故障，保持 In Progress。
 
 - **2026-10-20 第三批实现**：聊天、反馈和操作查询接受可选 AbortSignal；停止等待及页面卸载终止本地请求，执行代次屏蔽迟到回调。查询认证失效提示重新登录并保留 UUID；重试后撤回旧的 can_retry，须再次查询确认。SSE 按完整事件处理 UTF-8、CRLF、多行 data、注释与完成事件，done 后结束读取并释放资源。服务端接口、事实来源、提交与接管契约不变；完整取消仍未实现，状态继续 In Progress。实际浏览器与真实依赖证据见 [第三批记录](pilot-roadmap.md#third-batch-verification)。
+- **2026-10-20 下一阶段顺序**：完整服务端取消及提交竞争列入 [演进路线第四阶段](evolution-roadmap.md#阶段与依赖)。首批 ADR-0009 只治理检索等待和实际线程容量，不增加业务取消契约，不据此关闭本问题。
 
 <a id="arch-013"></a>
 
 ## ARCH-013：异步请求路径包含同步阻塞调用
 
-- **状态 / 优先级 / 关联 ADR**：Open / P2 / 无。
+- **状态 / 优先级 / 关联 ADR**：In Progress / P2 / [ADR-0009（Accepted）](../adr/0009-bounded-retrieval-execution.md)。
 - **现象**：`hybrid_search` 在异步函数中直接调用同步 `_ensure_bm25` 和 `store.search`；其下包含同步 Milvus 网络调用及索引构建。本地 BGE 已使用 to_thread，但这不覆盖向量存储和 BM25 路径。
 - **影响与优先级理由**：慢查询或冷索引可能阻塞事件循环，影响其他请求；这是源码可见的阻塞风险，具体容量及耗时尚未测量，应在并发规模扩大前验证。
 - **代码证据**：[retriever.py](../../backend/app/rag/retriever.py) 的 `hybrid_search`、`_ensure_bm25`；[store.py](../../backend/app/rag/store.py) 的 `get_client`、`all_chunks`、`search`；[local_bge.py](../../backend/app/llm/providers/local_bge.py) 的 `embed_query`、`rerank`。
 - **验证方式与结论**：源码确认同步调用链；尚未执行事件循环延迟或吞吐测试，不能给出并发上限或性能提升比例。
 - **建议方向（待讨论）**：隔离阻塞工作并控制排队、并发及请求预算，结合真实工作负载再确定资源配置。
 - **验收条件**：模拟慢向量查询和冷索引时其他轻量请求仍可调度；超时、排队和取消可观察，真实容量以记录方法的测量结果为准。
+- **2026-10-20 提案与隔离实验**：新增 ADR-0009，推荐有界工作队列、专用线程、剩余预算传播及运行调用结束后才释放容量。独立原型以合成 30 ms I/O 和真实 BM25（2001 个预分词切片）比较 W/Q=1/2、2/4、4/8，四项队列/取消/排空断言通过，初始实验配置推荐 4/8；方法、结果及环境限制见提案。未连接真实业务依赖、未改请求路径；实际多进程容量、BGE 等其他阻塞路径仍待验证，状态保持 Open。
+- **2026-10-20 检索路径实施**：ADR-0009 获准后已将同步 Milvus、完整 BM25 构建/评分与融合放入有界执行器；确定性容量/取消/关闭、实际 ASGI 轻量请求、按版冷启动合并回归通过，真实 BGE/Milvus/2001 切片资源复核与双进程/浏览器验收见 [实施记录](evolution-roadmap.md#2026-10-20-首批实施记录)及 [资源数据](../adr/0009-bounded-retrieval-execution.md#2026-10-20-真实依赖资源复核)。初值 W=4/Q=8、缓存 2 版均按进程计算。BGE 自身锁/线程、其余同步路径、极端慢调用及长期连接/内存与部署吞吐/成本未完成治理，保持 In Progress。
 
 <a id="arch-014"></a>
 
@@ -318,6 +331,8 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-20 第二批覆盖**：完整隔离 **238 passed，零失败/错误/跳过**，包含图结果、幂等、真实 SQL 提交/竞争/恢复及独立 Redis 过期/投影/消费去重；前端另 15 项及构建通过。验收环境、失败修正及证据边界见 [第二批验收](pilot-roadmap.md#second-batch-verification)。ARCH-014 继续 In Progress，知识发布失败等延期能力的不变量仍待对应实施，不能由测试总数推导已经覆盖。
 
 - **2026-10-20 第三批覆盖**：完整隔离后端 **272 passed**，前端 **26 passed**，独立真实依赖及 Chromium **15 passed**，均零失败/错误/跳过；前端类型/构建、浏览器测试类型检查通过。新增数字误判反例、脚本隔离/清理保护、知识恢复就绪边界与真实登录/断流/竞争/进程及依赖故障场景；知识维护演练恢复 66 个切片并逐字段核对，再验证引用。报告与范围见 [第三批记录](pilot-roadmap.md#third-batch-verification)。在线知识发布、完整取消等延期能力仍未完成，本问题继续 In Progress。
+- **2026-10-20 下一阶段测试规划**：[ADR-0008（Proposed）](../adr/0008-versioned-knowledge-publication.md)、[ADR-0009（Proposed）](../adr/0009-bounded-retrieval-execution.md)关联的发布故障、版本重放、2001 切片完整性、有界调度、迁移和浏览器不变量已形成 [验收矩阵](evolution-roadmap.md#第一阶段验收矩阵)。本轮只有隔离设计原型实验，没有新增持久化业务回归或重跑上述历史套件，继续 In Progress。
+- **2026-10-20 知识发布覆盖**：新增知识快照、并发发布与真实进程退出、版本绑定/原 UUID/延迟缓存任务、完整检索、历史引用、冷启动与取消容量、模型工件变化及隐私不变量。最终隔离后端 302、前端 26、完整真实依赖 Chromium 16 项通过并清理，证据分类见 [实施记录](evolution-roadmap.md#2026-10-20-首批实施记录)。本问题保持 In Progress，不以测试数量关闭；后续独立评估、幂等范围和生命周期治理仍需各自断言。
 
 <a id="arch-015"></a>
 
@@ -327,6 +342,7 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-20 复核证据**：[workbench.py](../../backend/app/api/workbench.py) 的 human_reply、update_ticket、takeover_conversation 与 [conversations.py](../../backend/app/api/conversations.py) 的 add_customer_message 没有客户端幂等标识。消息共享入口保证持久化和执行协调，不提供请求去重；重复请求可能重复消息或审计。接管重复请求也可能重复审计及控制版本递增。
 - **本次处理边界**：确认缺口，单独追踪；本轮修正第二批已有契约的缺陷，不扩展这些公共写接口。ADR-0004 当前覆盖聊天、反馈及可信建单工具，ARCH-003 的 Resolved 仅指该范围，不能宣称“所有写请求均已幂等”。
 - **下一步与验收**：启用依赖网络重试的人工工作台/直接追加流程前，明确这些操作的请求身份、冲突与查询契约，按架构规范决定扩展方案；独立 SQL 验证重复、并发重复、提交后断连仅产生一次消息/更新审计，权限与接管竞争继续成立。
+- **2026-10-20 下一阶段顺序**：列入 [演进路线第三阶段](evolution-roadmap.md#阶段与依赖)，先明确新增写入口幂等/查询契约，再联合 ARCH-016 定义保留与重放边界。本轮不扩展公共写接口，保持 Open。
 
 <a id="arch-016"></a>
 
@@ -336,6 +352,8 @@ python -B -m pytest -q -p no:cacheprovider
 - **2026-10-20 复核证据**：[semantic_cache.py](../../backend/app/cache/semantic_cache.py) 的 semcache:effect 去重标记没有 TTL；操作/任务也没有自动清理。缓存答案列表每租户最多 200 条，不限制这些独立标记的总量。
 - **本次判断**：不采用单独加 TTL 或成功后立即删除。缓存写入成功、任务完成提交前进程异常时会重放任务；受控人工重试也没有最大年龄，去重标记先失效会再次插入缓存。这是现有持久化补偿语义下的容量债务，不把无期限保留称为无风险。
 - **下一步与验收**：容量治理须一起定义操作/任务最大重试年龄、历史结果保留期、Redis 去重生命周期及安全清理机制；在该边界确定前保留现状。验证清理边界、写缓存后故障、长期任务补偿及重放，并测量记录增长。不得仅靠删除标记宣称已解决。
+- **2026-10-20 知识版本保留边界**：[ADR-0008（Proposed）](../adr/0008-versioned-knowledge-publication.md)按用户选择首批保留已发布知识快照与向量集合，不自动删除；这是待实施方案新增的容量债务，并非现有系统已有版本历史。第三阶段须联合引用寿命、回退窗口、操作/任务重放年龄设计治理；本轮不修改 TTL 或清理记录，保持 Open。
+- **2026-10-20 实施后的容量债务**：ADR-0008 已 Accepted 并完成首批限定验收，现已保留全部发布快照、集合及分版缓存，失败构建也不自动清理。条目数有限的 BM25 缓存不能代表 SQL、Milvus、Redis 总容量受控；本次固定语料检索实验没有测量长期存储增长，继续 Open，联合保留与重试边界按第三阶段设计。
 
 ## 2026-10-20 第二批验收报告复核
 

@@ -15,6 +15,7 @@ from app.llm import client
 from app.llm.router import model_for
 from app.memory import session
 from app.observability.trace import TraceCollector, timer
+from app.rag import execution
 from app.tools.registry import ToolContext, load_tools
 
 load_tools()
@@ -170,13 +171,41 @@ def build_graph(ctx: ToolContext, trace: TraceCollector):
     return g.compile()
 
 
-async def run(*, query, tenant_id, user_id, conversation_id, is_internal=False, role="",
-              context=None, operation_id=""):
+async def run(*, knowledge_version=None, **kwargs):
+    from app import knowledge
+    require_identity(ToolContext(tenant_id=kwargs.get("tenant_id", ""), user_id=kwargs.get("user_id", ""),
+                                 role=kwargs.get("role", ""), operation_id=kwargs.get("operation_id", "")))
+    kwargs["query"] = desensitize.desensitize_text(kwargs["query"])
+    with execution.scope(knowledge_version, operation_id=kwargs.get("operation_id", "")):
+        if knowledge_version is not None:
+            try:
+                await execution.run(lambda: knowledge.release_info(knowledge_version), phase="knowledge_check")
+            except desensitize.SensitiveDataError:
+                raise
+            except Exception:  # noqa: BLE001 -- 知识依赖故障转为统一的待提交接管结果。
+                return {"answer": "知识服务暂时无法完成诊断。", "knowledge_version": knowledge.public_identifier(knowledge_version),
+                        "handoff_requested": True, "planned_ticket": ticket.build_args(
+                            query=kwargs["query"], intent="ticket", entities={}, ai_diagnosis="",
+                            evidence={"failure": "knowledge_unavailable"})}
+        result = await _run(**kwargs)
+        result["knowledge_version"] = knowledge.public_identifier(knowledge_version) if knowledge_version else None
+        task = result.get("_effects", {}).get("semantic_cache")
+        if task is not None:
+            task["knowledge_version"] = knowledge.public_identifier(knowledge_version) if knowledge_version else None
+        return result
+
+
+async def _run(*, query, tenant_id, user_id, conversation_id, is_internal=False, role="",
+               context=None, operation_id=""):
     ctx = ToolContext(tenant_id=tenant_id, user_id=user_id, role=role, operation_id=operation_id)
     require_identity(ctx)
     query = desensitize.desensitize_text(query)
     trace = TraceCollector(tenant_id=tenant_id, conversation_id=conversation_id)
     ctx.trace_id = trace.trace_id
+    retrieval_context = execution.current.get()
+    if retrieval_context is not None:
+        execution.current.set(execution.RetrievalContext(retrieval_context.version, retrieval_context.deadline,
+                                                        operation_id, trace.trace_id))
     initial = {"tenant_id": tenant_id, "user_id": user_id, "conversation_id": conversation_id,
                "is_internal": ctx.is_internal, "query": query}
     if context is not None:

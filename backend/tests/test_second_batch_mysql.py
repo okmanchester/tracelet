@@ -48,6 +48,8 @@ async def store(mysql_engine, monkeypatch):
     from sse_starlette.sse import AppStatus
     monkeypatch.setattr(AppStatus, "should_exit_event", None)
     Base.metadata.create_all(mysql_engine)
+    from conftest import seed_knowledge
+    seed_knowledge(mysql_engine, monkeypatch)
     engine = create_async_engine(mysql_engine.url.set(drivername="mysql+aiomysql"), poolclass=NullPool)
     factory = async_sessionmaker(engine, expire_on_commit=False)
     for module in (chat, turns, effects, context, ticket_tools):
@@ -84,6 +86,53 @@ async def store(mysql_engine, monkeypatch):
 async def count(store, model):
     async with store.factory() as db:
         return (await db.execute(select(func.count()).select_from(model))).scalar_one()
+
+
+async def test_chat_pins_version_across_publication_and_original_uuid_retry(store):
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def paused(**kwargs):
+        entered.set()
+        await release.wait()
+        return draft()
+    store.run.side_effect = paused
+    request_id = str(uuid4())
+    body = {"request_id": request_id, "message": "versioned request"}
+    task = asyncio.create_task(store.client.post("/api/chat", json=body))
+    await entered.wait()
+    try:
+        async with store.factory() as db:
+            original = await db.get(models.KnowledgeRelease, "a"*32)
+            db.add(models.KnowledgeRelease(id="b"*32, collection_name="second", status="ready",
+                manifest=original.manifest, validation={}))
+            await db.flush()
+            head = await db.get(models.KnowledgeHead, 1)
+            head.release_id, head.generation = "b"*32, 2
+            db.add(models.KnowledgePublication(id=str(uuid4()), fingerprint="fixture2", action="publish",
+                release_id="b"*32, previous_release_id="a"*32, previous_generation=1, generation=2, operator="test"))
+            await db.commit()
+        release.set()
+        first = done(await task)
+        assert first["knowledge_version"] == "a"*32
+        assert done(await store.client.post("/api/chat", json=body)) == first
+        store.run.side_effect = lambda **kwargs: copy.deepcopy(draft())
+        second = done(await store.client.post("/api/chat", json={"request_id": str(uuid4()), "message": "next"}))
+        assert second["knowledge_version"] == "b"*32
+        assert store.run.await_args_list[0].kwargs["knowledge_version"] == "a"*32
+        assert store.run.await_args_list[1].kwargs["knowledge_version"] == "b"*32
+    finally:
+        release.set()
+
+
+async def test_missing_knowledge_head_rejects_without_new_operation_message_or_model(store):
+    async with store.factory() as db:
+        head = await db.get(models.KnowledgeHead, 1)
+        head.release_id = None
+        await db.commit()
+    response = await store.client.post("/api/chat", json={"request_id": str(uuid4()), "message": "not ready"})
+    assert response.status_code == 503
+    assert await count(store, models.Operation) == 0
+    assert await count(store, models.Message) == 0
+    store.run.assert_not_awaited()
 
 
 async def test_first_turn_replay_conflict_identity_and_required_id(store):
@@ -479,3 +528,21 @@ async def test_no_hit_explanation_and_human_option_are_preserved(store):
     assert result["answer"] == generated["answer"]
     assert result["need_human"] is False and result["ticket_status"] == "none"
     assert await count(store, models.Ticket) == 0
+
+
+async def test_late_cache_task_uses_original_version_namespace(store, isolated_redis, monkeypatch):
+    from app.cache import semantic_cache
+    monkeypatch.setattr(semantic_cache, "get_redis", lambda: isolated_redis)
+    monkeypatch.setattr(semantic_cache, "get_embedding_provider", lambda: SimpleNamespace(fingerprint="test"))
+    result = {"answer": "旧版说明", "intent": "doc_qa", "citations": []}
+    async with store.factory() as db:
+        effects.enqueue(db, "late_cache_task", store.conv_id, "a", {"semantic_cache": {
+            "knowledge_version": desensitize.PublicIdentifier("a"*32), "query": "safe", "result": result,
+            "embedding": [1.0, 0.0]}})
+        await db.commit()
+    for _ in range(2):
+        claimed = await effects.claim()
+        assert claimed is not None
+        await effects.consume(claimed)
+    assert await isolated_redis.llen(semantic_cache.key_for("a", "a"*32)) == 1
+    assert await isolated_redis.llen(semantic_cache.key_for("a", "b"*32)) == 0

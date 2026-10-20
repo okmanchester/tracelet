@@ -7,7 +7,7 @@ const ragQuestion = "Webhook 回调收不到怎么排查？请按文档说明。
 async function control(action: string, args: Record<string, unknown> = {}) {
   const response = await fetch(process.env.TRACELET_PILOT_CONTROL_URL!, {
     method: "POST", headers: { "Content-Type": "application/json", "X-Pilot-Control": process.env.TRACELET_PILOT_CONTROL_SECRET! },
-    body: JSON.stringify({ action, ...args }), signal: AbortSignal.timeout(180_000),
+    body: JSON.stringify({ action, ...args }), signal: AbortSignal.timeout(action === "knowledge_recovery" ? 600_000 : 180_000),
   });
   expect(response.status, `control ${action}`).toBe(200);
   return response.json();
@@ -370,13 +370,49 @@ test("真实 Milvus 不可用时不伪造知识引用", async ({ page }) => {
   } finally { await control("milvus_start"); }
 });
 
-test("停服知识更新中途失败，从快照恢复后引用仍有效", async ({ page }) => {
+test("知识构建失败不破坏生效版本，在线发布与回退后引用仍有效", async ({ page }) => {
+  test.setTimeout(660_000);
   await login(page);
   const restored = await control("knowledge_recovery");
   expect(restored.restored_chunks).toBeGreaterThan(0);
-  expect(Object.keys(restored.sources).length).toBeGreaterThan(0);
+  expect(restored.active_artifact_unchanged).toBe(true);
+  expect(restored.application_processes).toBe(2);
+  expect(restored.inflight_pinned).toBe(true);
+  expect(restored.cross_worker_uuid_replay).toBe(true);
+  expect(restored.rollback.knowledge_version).toBe(restored.original_version);
+  expect(restored.published_version).not.toBe(restored.original_version);
   const response = await api(page, "/chat", { request_id: randomUUID(), message: ragQuestion });
   expect(response.status).toBe(200);
   expect(response.data.citations.length).toBeGreaterThan(0);
   expect(response.data.need_human).toBe(false);
+  // The candidate is historical after rollback. Open its actual snapshot in
+  // Chromium rather than proving only that the current docs page still works.
+  const history = await api(page, `/docs?knowledge_version=${restored.published_version}`);
+  const doc = history.data.documents[0];
+  const detail = await api(page, `/docs/${doc.id}?knowledge_version=${restored.published_version}`);
+  const chunk = detail.data.chunks[0];
+  await page.goto(`/docs?doc_id=${doc.id}&knowledge_version=${restored.published_version}&chunk_id=${chunk.chunk_id}`);
+  await expect(page.locator(`#chunk-${chunk.chunk_id}`)).toBeVisible();
+  await expect(page.getByText(`版本 ${restored.published_version.slice(0, 8)}`, { exact: true })).toBeVisible();
+});
+
+
+test("版本化文档列表与引用打开同一不可变快照", async ({ page }) => {
+  await login(page);
+  const listing = await api(page, "/docs");
+  expect(listing.status).toBe(200);
+  const version = listing.data.knowledge_version;
+  expect(version).toMatch(/^[0-9a-f]{32}$/);
+  const doc = listing.data.documents[0];
+  const detail = await api(page, `/docs/${doc.id}?knowledge_version=${version}`);
+  expect(detail.data.knowledge_version).toBe(version);
+  const chunk = detail.data.chunks[0];
+  await page.goto(`/docs?doc_id=${doc.id}&knowledge_version=${version}&chunk_id=${chunk.chunk_id}`);
+  await expect(page.locator(`#chunk-${chunk.chunk_id}`)).toBeVisible();
+  await expect(page.getByText(`版本 ${version.slice(0, 8)}`, { exact: true })).toBeVisible();
+  const privacy = await control("audit");
+  expect(privacy.milvus_collections_scanned).toBeGreaterThan(1);
+  expect(privacy.milvus_hits).toBe(0);
+  expect(privacy.redis_hits).toBe(0);
+  expect(Object.values(privacy.sql_hits).every((value) => value === 0)).toBe(true);
 });

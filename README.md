@@ -131,7 +131,7 @@ python -m scripts.migrate_db check                    # 确认版本和结构与
 make setup-demo CONFIRM_RESET=1
 ```
 
-此命令依次执行安全初始化、种子装载、知识入库，任一步失败即停止，已完成的步骤不会自动回滚。种子装载会清空调用日志、密钥、应用、接口、错误码、账单、用量、用户、租户和套餐表；知识入库会删除并重建当前配置的 Milvus 知识向量集合。缺少 `CONFIRM_RESET=1` 会直接拒绝，且不启动任何数据准备步骤。
+此命令依次执行安全初始化、种子装载、知识入库，任一步失败即停止，已完成的步骤不会自动回滚。种子装载会清空调用日志、密钥、应用、接口、错误码、账单、用量、用户、租户和套餐表；知识准备会构建独立版本、完整验证，并以预期代次显式发布；保留历史集合。缺少 `CONFIRM_RESET=1` 会直接拒绝，且不启动任何数据准备步骤。
 
 Windows PowerShell 可在项目根目录使用相同的脚本入口，无需安装 `make`：
 
@@ -146,7 +146,7 @@ Set-Location ..
 
 需要删除并重建**受管 MySQL 业务表、版本表及当前知识向量集合**时，单独使用 `make reset-db CONFIRM_RESET=1`；PowerShell 对应在 `backend` 下执行 `python -m scripts.init_db --recreate --yes`。单独传 `--recreate` 会被拒绝。重置会先拒绝未受管表/对象或未知版本，再删除受管表及版本表，通过迁移历史重建；不清理 Redis、不重新装载演示数据，也不保证跨存储原子性。
 
-单独的 `make seed` 和 `make ingest` 保留原行为，分别清空上述业务表、重建知识向量集合；它们不检查 `CONFIRM_RESET`，执行前须确认目标配置。
+单独的 `make seed` 仍清空上述业务表，不检查 `CONFIRM_RESET`；`make ingest` 现在仅构建候选知识版本，不删除生效集合、不隐式发布。知识版本须再经 validate、publish 显式启用，命令与首次接入步骤见 [知识操作说明](docs/architecture/knowledge-operations.md)。
 
 ### 3. 启动服务
 
@@ -202,7 +202,7 @@ make bench    # 并发压测 + 阶段耗时分解 + 缓存优化前后对比
 - **后端启动报数据库/Redis 连不上**：确认 `make infra-up` 已起、`.env` 里的端口与 `docker-compose.yml` 一致（3307 / 6380 / 19531）。
 - **对话报 LLM 调用失败**：检查 `.env` 的 `DEEPSEEK_API_KEY` 是否已填、账户是否有额度；如需切回 DashScope，把 `LLM_CHAT_PROVIDER=dashscope` 并填 `DASHSCOPE_API_KEY`。
 - **本地模型加载失败**：确认 `.env` 的 `LOCAL_EMBEDDING_MODEL_PATH` / `LOCAL_RERANK_MODEL_PATH` 存在，且已执行 `pip install -e ".[local]"`；首次请求会加载模型，约多 2–5 秒。
-- **更换 Embedding 模型后检索异常**：向量空间已变化，必须重新执行 `make ingest` 重建 Milvus collection，并清理 Redis 语义缓存（`redis-cli FLUSHDB`）。
+- **更换 Embedding 模型后检索异常**：本批不支持跨向量空间透明切换；需按 [知识操作说明](docs/architecture/knowledge-operations.md) 核查配置、构建并验证兼容版本。答案缓存按知识版本隔离，不使用 FLUSHDB 作为发布步骤。
 - **端口被占用**：改 `docker-compose.yml` 的宿主机端口映射，并同步改 `.env`。
 - **想重置业务表和知识集合**：`make reset-db CONFIRM_RESET=1`；需要演示数据时再执行 `make setup-demo CONFIRM_RESET=1`。`make clean` 会停容器并删除全部项目数据卷，范围更大。
 
@@ -254,6 +254,8 @@ python -B -m pytest -q -p no:cacheprovider -p pytest_asyncio.plugin
 ## 深入了解
 
 - [系统已知问题与验收条件](docs/architecture/known-issues.md)
+- [下一阶段演进路线](docs/architecture/evolution-roadmap.md)
+- [知识版本构建、发布与回退](docs/architecture/knowledge-operations.md)
 - [ADR 规范、模板与决策索引](docs/adr/README.md)
 - 完整教程（需求分析 / 方案设计 / 代码实践 / 简历面试，共 31 篇）：`docs/tutorial/`
 - 技术方案设计：`docs/DevSupport-AI-技术方案设计.md`

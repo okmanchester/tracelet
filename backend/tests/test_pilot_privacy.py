@@ -314,3 +314,14 @@ async def test_http_errors_validation_and_sanitizer_failures_do_not_echo_input()
         response = await c.post("/validate", json={"conversation_id": "c_probe", "type": TEXT})
         assert response.status_code == 422
         assert_clean(response.json())
+
+
+def test_public_knowledge_identifiers_require_server_marker_not_field_names():
+    identifier = "a" * 32
+    chunk = "b" * 64
+    raw = {"knowledge_version": identifier, "chunk_id": chunk}
+    assert identifier not in str(desensitize.desensitize_obj(raw))
+    trusted = {"knowledge_version": desensitize.PublicIdentifier(identifier),
+               "chunk_id": desensitize.PublicIdentifier(chunk)}
+    assert desensitize.desensitize_obj(trusted) == raw
+    assert identifier not in str(desensitize.desensitize_obj({"api_key": desensitize.PublicIdentifier(identifier)}))
